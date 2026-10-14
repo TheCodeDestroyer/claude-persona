@@ -282,8 +282,8 @@ test('/persona dump writes the tools, system prompt and conversation the last re
   await start($)
   await persona($, 'dev --keep')
   await $.prompt.compose({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: ['Bash', 'mcp__context7__query-docs'], outputStyle: null, traits: [] })
-  expect((await persona($, 'dump')).text).toBe('Wrote what the last request carried to /tmp/persona-dump.txt.')
-  const text = w.written['/tmp/persona-dump.txt'] ?? ''
+  expect((await persona($, 'dump')).text).toBe('Wrote what the last request carried to /Users/tester/.claude/persona-dump.txt.')
+  const text = w.written['/Users/tester/.claude/persona-dump.txt'] ?? ''
   expect(text).toMatch(/# persona: dev/)
   expect(text).toMatch(/mcp__context7__query-docs/)
   expect(text).toMatch(/## \[persona:instructions\]/)

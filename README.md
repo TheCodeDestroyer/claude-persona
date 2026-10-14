@@ -60,7 +60,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins** → **A
 | `/persona login <name>` | Moves the next request to that login (see [Logins](#logins)). |
 | `/persona reload` | Reads `personas.json` again. |
 | `/persona debug` | Shows how many tokens the mod removed from each part of the request. |
-| `/persona dump [path]` | Writes the last request, as the mod sees it, to a file (default `/tmp/persona-dump.txt`). |
+| `/persona dump [path]` | Writes the last request, as the mod sees it, to a file (default `persona-dump.txt` in your config folder). It holds the whole conversation.. |
 
 A session starts with the persona in the `CLAUDE_PERSONA` environment variable, or else the file's `default`.
 

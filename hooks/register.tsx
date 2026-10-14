@@ -47,7 +47,11 @@ let deferredTools = 0
 let lastSystem: readonly { id: string; text: string }[] = []
 let lastTools: readonly string[] = []
 
-const DUMP_PATH = '/tmp/persona-dump.txt'
+/** The dump holds the whole conversation, so by default it goes in the config folder, never a shared /tmp. */
+async function dumpPath($: EngineInterface): Promise<string> {
+  const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
+  return `${configDir.replace(/\/+$/, '')}/persona-dump.txt`
+}
 
 /** Writes what the last request carried, as far as a mod can see it, so a test can grep it. */
 async function dump($: EngineInterface, name: string | null, path: string): Promise<string> {
@@ -233,7 +237,7 @@ export const register: Register = on => {
 
     if (request.kind === 'debug') return { text: describeSeen((await active($)).name) }
     if (request.kind === 'dump') {
-      const written = await dump($, (await active($)).name, request.path ?? DUMP_PATH)
+      const written = await dump($, (await active($)).name, request.path ?? (await dumpPath($)))
       return { text: `Wrote what the last request carried to ${written}.` }
     }
 
