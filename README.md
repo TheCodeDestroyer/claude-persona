@@ -236,6 +236,11 @@ claude --plugin-dir .           # start a session with this folder loaded
 
 `tsc -p .` type-checks the mod once Claude Code has loaded it, because loading writes the types to `.claude-plugin/types/`.
 
+Git hooks come from [lefthook](https://lefthook.dev), which `mise` installs when you enter the folder (run `mise trust` once):
+
+- **pre-commit:** a change to what the plugin ships (`hooks/`, `types/`, `personas.example.json`, `tsconfig.json`) must raise `version` in `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` must list the same version. `claude plugin update` sees a new release only through the version.
+- **pre-push:** `claude plugin validate .` and `claude plugin test .`.
+
 | File | What it holds |
 | --- | --- |
 | `hooks/register.tsx` | The hooks: the command, the filters, the status row. |
