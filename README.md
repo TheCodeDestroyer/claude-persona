@@ -254,3 +254,7 @@ Git hooks come from [lefthook](https://lefthook.dev). `mise` installs it and `jq
 | `skills/setup/SKILL.md` | The `persona:setup` skill: how to write `personas.json`. |
 | `personas.example.json` | A starting `personas.json`. |
 | `personas.schema.json` | The JSON schema of `personas.json`, for editors. |
+
+## License
+
+[MIT](LICENSE)
