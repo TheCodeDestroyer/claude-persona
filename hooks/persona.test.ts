@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { describeCheck, filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingNames, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
+import { describeCheck, filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingNames, mcpServerOf, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
 
 const HOME = '/Users/tester'
 const PATH = `${HOME}/.claude/personas.json`
@@ -447,6 +447,27 @@ test('the server the engine names for a tool decides, not the tool name', async 
   expect((await $.tool.call({ tool, input: {} } as never)).deny).toMatch(/does not use/)
   expect(isMcpToolAllowed({ allow: ['foo'] }, tool)).toBe(true)
   expect(isMcpToolAllowed({ allow: ['foo'] }, tool, 'foo__bar')).toBe(false)
+})
+
+test('a plugin\'s MCP server is named as /mcp shows it, and /persona check sees it', async ($, on) => {
+  expect(mcpServerOf('mcp__claude_ai_Gmail__create_draft', 'mcp:claude.ai Gmail')).toBe('claude.ai Gmail')
+  expect(mcpServerOf('mcp__plugin_context7_context7__query-docs', 'context7@context7-marketplace')).toBe('plugin:context7:context7')
+  expect(mcpServerOf('mcp__plugin_my_tool_srv__run', 'my.tool@market')).toBe('plugin:my.tool:srv')
+  expect(mcpServerOf('mcp__other__run', 'context7@context7-marketplace')).toBeUndefined()
+  expect(mcpServerOf('Bash', 'engine')).toBeUndefined()
+  const config = { personas: { dev: { mcp: { allow: ['plugin:context7:context7'] } } } }
+  world(on, config)
+  await start($)
+  await persona($, 'dev --keep')
+  const described = await $.tool.describe({
+    tool: 'mcp__plugin_context7_context7__query-docs',
+    description: '',
+    provider: { plugin: 'context7@context7-marketplace', tier: 'user' },
+  })
+  expect(described.isDeferred).not.toBe(true)
+  const check = await persona($, 'check')
+  expect(check.text).toMatch(/MCP servers \(1\): plugin:context7:context7/)
+  expect(check.text).not.toMatch(/match nothing:[\s\S]*plugin:context7:context7/)
 })
 
 test('filter names that match nothing seen are flagged; a kind with nothing seen is not checked', () => {

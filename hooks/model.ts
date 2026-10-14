@@ -220,6 +220,23 @@ export function toolSpelling(server: string): string {
 }
 
 /**
+ * The /mcp name of an MCP tool's server, from the tool's `provider.plugin`. A
+ * configured server is `mcp:<server>`. A plugin's server names its plugin
+ * instead (`context7@context7-marketplace`), so its name, `plugin:<plugin>:<server>`,
+ * comes from the tool name `mcp__plugin_<plugin>_<server>__<tool>`, the server in
+ * its tool spelling. Undefined when neither fits.
+ */
+export function mcpServerOf(tool: string, provider: string): string | undefined {
+  if (provider.startsWith('mcp:')) return provider.slice('mcp:'.length)
+  const plugin = provider.split('@')[0] ?? ''
+  const prefix = `mcp__plugin_${toolSpelling(plugin)}_`
+  if (plugin === '' || !tool.startsWith(prefix)) return undefined
+  const rest = tool.slice(prefix.length)
+  const at = rest.indexOf('__')
+  return at > 0 ? `plugin:${plugin}:${rest.slice(0, at)}` : undefined
+}
+
+/**
  * Whether an MCP server, by its /mcp name or its tool spelling, passes the
  * filter. Both the name and the patterns are compared in the tool spelling, so
  * `claude.ai Gmail` and `claude_ai_Gmail` are one server to every rule.

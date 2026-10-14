@@ -1,6 +1,6 @@
 {
   "name": "persona",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Switch Claude Code personas in a session: hide the MCP servers, skills and agents a persona does not need, add its own instructions, and switch logins.",
   "author": { "name": "Nace Logar", "url": "https://github.com/TheCodeDestroyer" },
   "homepage": "https://github.com/TheCodeDestroyer/claude-persona",

@@ -17,6 +17,7 @@ import {
   isListed,
   isMcpToolAllowed,
   type Known,
+  mcpServerOf,
   listingNames,
   LOGINS_SHAPE,
   loginOf,
@@ -38,8 +39,9 @@ const LOGIN_COLOR = 'suggestion'
 const COMPACT_DELAY_MS = 100
 
 /**
- * The server of each MCP tool, as `tool.describe` names it (`mcp:<server>`), so a
- * check need not guess where the server name ends inside the tool name.
+ * The server of each MCP tool, as `tool.describe` names it (`mcp:<server>`, or the
+ * plugin that ships it), so a check need not guess where the server name ends
+ * inside the tool name.
  */
 const mcpServers = new Map<string, string>()
 
@@ -338,7 +340,8 @@ export const register: Register = on => {
 
   // MCP tools of a hidden server go behind ToolSearch...
   on('tool.describe', { tool: /^mcp__/ }, async ($, e, next) => {
-    if (e.provider.plugin.startsWith('mcp:')) mcpServers.set(e.tool, e.provider.plugin.slice('mcp:'.length))
+    const server = mcpServerOf(e.tool, e.provider.plugin)
+    if (server !== undefined) mcpServers.set(e.tool, server)
     const described = await next(e)
     const { persona } = await active($)
     if (isToolVisible(persona, e.tool)) return described
