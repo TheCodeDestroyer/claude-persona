@@ -1,12 +1,19 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { PersonaView } from '../types'
+import type { CheckMark, PersonaView } from '../types'
 
 import {
+  approxTokens,
+  checkFooter,
+  checkHeadline,
+  checkView,
   compactInstructions,
   type Config,
+  type ContextLists,
   describeCheck,
+  describeCheckTokens,
+  describeContext,
   describeList,
   EMPTY,
   filterListing,
@@ -17,6 +24,7 @@ import {
   isListed,
   isMcpToolAllowed,
   type Known,
+  listingAliases,
   listingNames,
   LOGINS_SHAPE,
   loginOf,
@@ -26,12 +34,22 @@ import {
   parseArgs,
   parseAuthStatus,
   parseConfig,
+  type Removed,
   signInCommand,
+  tokenCount,
 } from './model'
 
 const ACTIVE = { plugin: 'persona', key: 'active' } as const
 const LOGIN = { plugin: 'persona', key: 'login' } as const
 const VIEW = atom({ plugin: 'persona', key: 'view' } as const, null)
+const CHECK = atom({ plugin: 'persona', key: 'check' } as const, null)
+const CHECK_PANE = 'persona-check'
+/** How the check pane marks each row: theme keys, so they follow the person's theme. */
+const MARKS: Record<CheckMark, { glyph: string; color: string }> = {
+  kept: { glyph: '✓', color: 'success' },
+  quiet: { glyph: '◌', color: 'warning' },
+  hidden: { glyph: '✗', color: 'inactive' },
+}
 /** Colors for a persona or login that names none: theme keys, so they follow the person's theme. */
 const PERSONA_COLOR = 'claude'
 const LOGIN_COLOR = 'suggestion'
@@ -39,17 +57,37 @@ const COMPACT_DELAY_MS = 100
 
 /**
  * The server of each MCP tool, as `tool.describe` names it (`mcp:<server>`), so a
- * check need not guess where the server name ends inside the tool name.
+ * filter need not guess where the server name ends inside the tool name.
  */
 const mcpServers = new Map<string, string>()
 
 /** Skills and agent types the engine offered, hidden ones too, for `/persona check`. */
 const knownSkills = new Set<string>()
 const knownAgents = new Set<string>()
+/** A skill's listing name, which filters take, by the full name the context counts it under. */
+const skillNames = new Map<string, string>()
 
-/** Every name this session has seen; MCP servers come from the tools `tool.describe` named. */
-function known(): Known {
-  return { mcp: [...new Set(mcpServers.values())], skills: [...knownSkills], agents: [...knownAgents] }
+/**
+ * The context's lists before the persona filters them, under the names filters take;
+ * estimated locally, so no request is sent. The context spells servers as tools do,
+ * so a server `tool.describe` named keeps its /mcp name.
+ */
+async function contextLists($: EngineInterface): Promise<ContextLists> {
+  const { breakdown } = (await $.session.usage({ breakdown: 'summary' })).context
+  return {
+    mcpTools: (breakdown?.mcpTools ?? []).map(tool => ({ ...tool, serverName: mcpServers.get(tool.name) ?? tool.serverName })),
+    skills: (breakdown?.skills?.skillFrontmatter ?? []).map(skill => ({ ...skill, name: skillNames.get(skill.name) ?? skill.name })),
+    agents: breakdown?.agents ?? [],
+  }
+}
+
+/**
+ * Every name this session has seen. MCP servers come from the context's tools,
+ * hidden ones and those plugins ship too; skills and agent types from what the
+ * engine offered, as the context counts only custom agents.
+ */
+function known(mcpTools: ContextLists['mcpTools']): Known {
+  return { mcp: [...new Set(mcpTools.map(tool => tool.serverName))], skills: [...knownSkills], agents: [...knownAgents] }
 }
 
 function isToolVisible(persona: Persona | undefined, tool: string): boolean {
@@ -100,15 +138,31 @@ async function dump($: EngineInterface, name: string | null, path: string): Prom
   return path
 }
 
+/**
+ * What the persona took out of the last values the engine sent: the skill listing,
+ * and the rest is MCP. Null before the first request.
+ */
+function removed(): Removed | null {
+  if (sections.size === 0 && attachments.size === 0) return null
+  const cut = (seen: Seen) => Math.max(0, seen.before - seen.after)
+  let skills = 0
+  let mcp = 0
+  for (const [type, seen] of attachments) {
+    if (type === 'skill_listing') skills += cut(seen)
+    else mcp += cut(seen)
+  }
+  for (const seen of sections.values()) mcp += cut(seen)
+  return { skills, mcp }
+}
+
 function see(map: Map<string, Seen>, key: string, before: string | null, after: string | null): void {
   const held = map.get(key)
   map.set(key, { before: before?.length ?? 0, after: after?.length ?? 0, count: (held?.count ?? 0) + 1 })
 }
 
 function describeSeen(name: string | null): string {
-  const tokens = (chars: number) => `~${Math.round(chars / 4)}`
   const rows = (map: Map<string, Seen>) =>
-    [...map].map(([key, s]) => `  ${key}: ${tokens(s.before)} -> ${tokens(s.after)} tokens${s.count > 1 ? ` (${s.count}x)` : ''}`)
+    [...map].map(([key, s]) => `  ${key}: ${approxTokens(s.before)} -> ${approxTokens(s.after)} tokens${s.count > 1 ? ` (${s.count}x)` : ''}`)
   const total = (map: Map<string, Seen>) => [...map.values()].reduce((sum, s) => sum + s.before - s.after, 0)
   return [
     `Active: ${name ?? 'none'}. Last values the engine sent since this mod loaded:`,
@@ -117,7 +171,7 @@ function describeSeen(name: string | null): string {
     'Attachments:',
     ...rows(attachments),
     `MCP tools this mod moved behind ToolSearch: ${deferredTools}`,
-    `Removed: ~${Math.round(total(sections) / 4)} tokens of system prompt, ~${Math.round(total(attachments) / 4)} of attachments.`,
+    `Removed: ${approxTokens(total(sections))} tokens of system prompt, ${approxTokens(total(attachments))} of attachments.`,
   ].join('\n')
 }
 
@@ -265,10 +319,14 @@ export const register: Register = on => {
 
     if (request.kind === 'debug') return { text: describeSeen((await active($)).name) }
     if (request.kind === 'check') {
-      const { config, path, error } = await loaded($)
-      const text = describeCheck(config, known(), path, error)
-      // The model reads it too, so it can help write personas.json.
-      return { text, context: [text] }
+      const [{ config, path, error }, { name }, lists] = await Promise.all([loaded($), active($), contextLists($)])
+      const seen = known(lists.mcpTools)
+      const text = describeCheck(config, seen, path, error)
+      const view = checkView(config, name, lists, seen, path, error)
+      await update($, CHECK, () => view)
+      const { isPlaced } = await $.ui.open({ id: CHECK_PANE, title: 'Persona check' })
+      // The model reads the names too, so it can help write personas.json.
+      return { text: isPlaced ? 'Persona check pane opened.' : `${describeCheckTokens(view)}\n\n${text}`, context: [text] }
     }
     if (request.kind === 'dump') {
       const written = await dump($, (await active($)).name, request.path ?? (await dumpPath($)))
@@ -336,6 +394,15 @@ export const register: Register = on => {
     return { text: `${label}. Compacting the conversation for it...`, context }
   })
 
+  // /context counts what the engine sent, so the persona adds what it took out.
+  on('command.run', { command: 'context' }, async ($, e, next) => {
+    const [ran, { name, persona }] = await Promise.all([next(e), active($)])
+    if (name === null || persona === undefined || ran.text === undefined) return ran
+    const { mcpTools } = await contextLists($)
+    const section = describeContext(name, persona, known(mcpTools), mcpTools, removed())
+    return { ...ran, text: `${ran.text.trimEnd()}\n\n${section}`, context: [...(ran.context ?? []), section] }
+  }).catch(($, e, next) => next(e))
+
   // MCP tools of a hidden server go behind ToolSearch...
   on('tool.describe', { tool: /^mcp__/ }, async ($, e, next) => {
     if (e.provider.plugin.startsWith('mcp:')) mcpServers.set(e.tool, e.provider.plugin.slice('mcp:'.length))
@@ -350,7 +417,10 @@ export const register: Register = on => {
   // leave the skill listing, and hidden servers their part of any MCP instructions.
   on('prompt.attachment', async ($, e, next) => {
     const { text } = await next(e)
-    if (e.type === 'skill_listing' && text !== null) listingNames(text).forEach(skill => knownSkills.add(skill))
+    if (e.type === 'skill_listing' && text !== null) {
+      listingNames(text).forEach(skill => knownSkills.add(skill))
+      for (const [full, name] of listingAliases(text)) skillNames.set(full, name)
+    }
     const { persona } = await active($)
     let after = text
     if (after !== null && persona !== undefined) {
@@ -451,10 +521,59 @@ export const register: Register = on => {
     )
   }).catch(($, e, next) => next(e))
 
+  // /persona check as /context draws it: a bar of kept and hidden tokens, then each kind by tokens.
+  on('ui.render', { component: 'Pane', requestId: CHECK_PANE }, async ($, e, next) => {
+    const view = await read($, CHECK)
+    if (view === null) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const [title, detail] = checkHeadline(view)
+    const bar = Math.max(10, Math.min(40, e.props.bodyColumns - 2))
+    const hiddenCells = view.total === 0 ? 0 : Math.round((bar * view.hidden) / view.total)
+    const nameWidth = Math.max(10, e.props.bodyColumns - 12)
+    return (
+      <Box flexDirection="column">
+        <Text>
+          <Text bold>{title}</Text>
+          <Text dimColor>{` · ${detail}`}</Text>
+        </Text>
+        <Text>
+          <Text color={MARKS.kept.color}>{'█'.repeat(bar - hiddenCells)}</Text>
+          <Text color={MARKS.hidden.color}>{'░'.repeat(hiddenCells)}</Text>
+        </Text>
+        <Text dimColor>
+          {MARKS.kept.glyph} kept {MARKS.quiet.glyph} quiet {MARKS.hidden.glyph} hidden · estimated tokens
+        </Text>
+        {view.error === undefined ? null : <Text color="error">{`${view.path}: ${view.error}`}</Text>}
+        {view.groups.map(group => (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>{`${group.title} (${group.rows.length})`}</Text>
+            {group.rows.length === 0 ? <Text dimColor>  none in the context</Text> : null}
+            {group.rows.map(row => (
+              <Text dimColor={row.mark !== 'kept'}>
+                <Text color={MARKS[row.mark].color}>{`  ${MARKS[row.mark].glyph} `}</Text>
+                {`${tokenCount(row.tokens).padStart(6)}  ${row.name.length > nameWidth ? `${row.name.slice(0, nameWidth - 1)}…` : row.name}`}
+              </Text>
+            ))}
+          </Box>
+        ))}
+        <Box flexDirection="column" marginTop={1}>
+          {checkFooter(view.unchecked, view.unmatched, view.path).map(line =>
+            // The footer indents the filter names that match nothing.
+            line.startsWith('  ') ? <Text color="warning">{line}</Text> : <Text dimColor>{line}</Text>,
+          )}
+        </Box>
+      </Box>
+    )
+  }).catch(($, e, next) => next(e))
+
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     const { name, persona } = await active($)
 
+    // Each request sends every section again, so one it no longer sends saves nothing.
+    for (const id of sections.keys()) {
+      if (!composed.sections.some(section => section.id === id)) sections.delete(id)
+    }
     const kept = composed.sections.flatMap(section => {
       const text = persona === undefined ? section.text : filterMcpInstructions(section.text, persona.mcp)
       see(sections, section.id, section.text, text)

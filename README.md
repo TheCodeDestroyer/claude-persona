@@ -60,7 +60,7 @@ Or ask Claude to set it up: the `persona:setup` skill knows the file format, the
 | `/persona off` | Turns the persona off. Everything is available again. |
 | `/persona login` | Lists the logins. |
 | `/persona login <name>` | Moves the next request to that login (see [Logins](#logins)). |
-| `/persona check` | Lists the MCP servers, skills and agent types the session has seen, hidden ones too, and the filter names that match nothing. Claude reads the list too. |
+| `/persona check` | Opens a pane like `/context`: the tokens the persona hides, then each MCP server, skill and custom agent with its tokens, marked kept, quiet or hidden, and the filter names that match nothing. Where no pane is drawn (`claude -p`), it prints the same as text. Claude reads the names too. |
 | `/persona reload` | Reads `personas.json` again. |
 | `/persona debug` | Shows how many tokens the mod removed from each part of the request. |
 | `/persona dump [path]` | Writes the last request, as the mod sees it, to a file (default `persona-dump.txt` in your config folder). It holds the whole conversation.. |
@@ -226,7 +226,7 @@ Only the organization's managed settings can change this.
 The mod hides; it does not unload. Hidden MCP servers stay connected, and `/persona off` brings everything back at once.
 
 Things to know:
-- `/context` reads Claude Code's own lists, not the filtered request, so it shows more than is sent. Use the token count in your status line or `/persona debug`.
+- `/context` reads Claude Code's own lists, not the filtered request, so its counts are from before the filters. While a persona is active, the mod adds a section at the bottom of `/context`: the tokens the persona saves, and the skills, MCP servers and agent types it hides.
 - The request's tool list still names hidden MCP tools as deferred, because a mod cannot change that list. The model cannot find them with ToolSearch or call them.
 - The status row shows in the terminal and the desktop app, not in VS Code or on mobile.
 
