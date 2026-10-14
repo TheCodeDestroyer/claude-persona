@@ -542,6 +542,10 @@ test('the check view marks each name as the persona treats it, by tokens, most f
   const none = checkView(config, null, LISTS, known, PATH)
   expect([none.total, none.hidden]).toEqual([2450, 0])
   expect(listingAliases(SKILLS)).toEqual([['convex:convex-db-access', 'convex:db-access']])
+  // A quiet name stays callable under a deny that matches it too.
+  const quiet = parseConfig(JSON.stringify({ personas: { dev: { skills: { deny: ['*'], quiet: ['agent-browser'] } } } }))
+  const marks = checkView(quiet, 'dev', LISTS, known, PATH).groups[1]?.rows.map(row => `${row.mark} ${row.name}`)
+  expect(marks).toEqual(['hidden ops:grafana', 'quiet agent-browser', 'hidden convex:convex-db-access'])
 })
 
 /** Every string a drawn tree holds, one per line where the tree breaks lines. */
@@ -593,6 +597,11 @@ test('the /context section counts the tokens saved and names what is hidden', ()
       '  Agent types: 1 of 2 offered. Hidden: claude-code-guide.',
     ].join('\n'),
   )
+  // A session with no skills still shows what the persona saves on MCP.
+  const noSkills = describeContext('dev', persona, { ...known, skills: [] }, mcpTools, { skills: 0, mcp: 2_000 })
+  expect(noSkills).toMatch(/^dev persona saves ~500 tokens/)
+  expect(noSkills).toMatch(/MCP: ~500 saved\. Hidden: claude\.ai Gmail \(2 tools\)\./)
+  expect(describeContext('dev', persona, known, mcpTools, null)).toMatch(/after the first request/)
 })
 
 test('/context ends with the persona section, and is left alone with no persona', async ($, on) => {

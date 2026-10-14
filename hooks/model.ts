@@ -211,7 +211,7 @@ export type ContextLists = {
 
 /** How a persona treats a skill: hidden, kept in the listing, or callable but left out of it (quiet). */
 function skillMark(filter: Filter | undefined, skill: string): CheckMark {
-  return !isAllowed(filter, skill) ? 'hidden' : isListed(filter, skill) ? 'kept' : 'quiet'
+  return !isCallable(filter, skill) ? 'hidden' : isListed(filter, skill) ? 'kept' : 'quiet'
 }
 
 /** Each server's total over its tools, as `weight` counts a tool. */
@@ -280,7 +280,7 @@ export function describeContext(
   persona: Persona,
   known: Known,
   mcpTools: readonly { serverName: string }[],
-  removed: Removed,
+  removed: Removed | null,
 ): string {
   const skills = [...known.skills].sort()
   const marked = (mark: CheckMark) => skills.filter(skill => skillMark(persona.skills, skill) === mark)
@@ -289,7 +289,7 @@ export function describeContext(
   const hiddenServers = [...servers].map(([server, tools]) => `${server} (${tools} tool${tools === 1 ? '' : 's'})`)
   const agents = known.agents.filter(agent => !isAllowed(persona.agents, agent)).sort()
 
-  if (skills.length === 0) {
+  if (removed === null) {
     return `${name} persona is active. It shows the tokens it saves after the first request.`
   }
   const lines = [

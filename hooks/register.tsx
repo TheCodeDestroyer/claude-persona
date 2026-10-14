@@ -138,8 +138,12 @@ async function dump($: EngineInterface, name: string | null, path: string): Prom
   return path
 }
 
-/** What the persona took out of the last values the engine sent: the skill listing, and the rest is MCP. */
-function removed(): Removed {
+/**
+ * What the persona took out of the last values the engine sent: the skill listing,
+ * and the rest is MCP. Null before the first request.
+ */
+function removed(): Removed | null {
+  if (sections.size === 0 && attachments.size === 0) return null
   const cut = (seen: Seen) => Math.max(0, seen.before - seen.after)
   let skills = 0
   let mcp = 0
@@ -566,6 +570,10 @@ export const register: Register = on => {
     const composed = await next(e)
     const { name, persona } = await active($)
 
+    // Each request sends every section again, so one it no longer sends saves nothing.
+    for (const id of sections.keys()) {
+      if (!composed.sections.some(section => section.id === id)) sections.delete(id)
+    }
     const kept = composed.sections.flatMap(section => {
       const text = persona === undefined ? section.text : filterMcpInstructions(section.text, persona.mcp)
       see(sections, section.id, section.text, text)
