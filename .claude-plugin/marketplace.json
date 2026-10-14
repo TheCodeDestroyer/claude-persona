@@ -1,0 +1,15 @@
+{
+  "name": "claude-persona",
+  "owner": {
+    "name": "Nace Logar",
+    "url": "https://github.com/TheCodeDestroyer"
+  },
+  "description": "Claude Code personas: a mod that keeps each session to the tools it needs.",
+  "plugins": [
+    {
+      "name": "persona",
+      "source": "./",
+      "description": "Switch Claude Code personas in a session: hide the MCP servers, skills and agents a persona does not need."
+    }
+  ]
+}
