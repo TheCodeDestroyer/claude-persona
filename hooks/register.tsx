@@ -32,9 +32,14 @@ const VIEW = atom({ plugin: 'persona', key: 'view' } as const, null)
 const PERSONA_COLOR = 'claude'
 const LOGIN_COLOR = 'suggestion'
 const COMPACT_DELAY_MS = 100
+
+/** Counts persona switches, so a compaction asked for by an earlier switch can tell it is stale. */
+let switches = 0
 const LOGIN_CHECK_MS = 20_000
 /** How many more ToolSearch matches to ask for, so hidden ones dropped still leave enough. */
 const HIDDEN_SEARCH_SLACK = 10
+/** The widest ToolSearch window a search with hidden matches grows to. */
+const SEARCH_WINDOW_MAX = 200
 
 type Loaded = { config: Config; path: string; error?: string }
 
@@ -259,7 +264,7 @@ export const register: Register = on => {
       const staying = `The session stays on the ${now ?? 'current'} login.`
       if (checked === undefined) return { text: `Could not check the ${request.name} login. ${staying}` }
       if (!checked.isSignedIn) {
-        return { text: `${folder} has no sign-in. ${staying}\nSign it in once with: ${signInCommand(storage, folder)}` }
+        return { text: `${folder} has no sign-in. ${staying}\nSign it in once with: ${signInCommand(storage)}` }
       }
       if (!(await tryUseLogin($, folder))) return { text: `Could not switch to the ${request.name} login. ${GUARD_NOTE}` }
       await $.state.set(LOGIN, request.name)
@@ -277,6 +282,8 @@ export const register: Register = on => {
       return { text: `No persona "${name}" in ${path}.\n\n${describeList(config, (await active($)).name, path, error)}` }
     }
 
+    switches += 1
+    const switchId = switches
     await $.state.set(ACTIVE, name)
     refresh($)
     await showStatus($)
@@ -295,7 +302,8 @@ export const register: Register = on => {
       return { text: `${label}. Nothing to compact yet.`, context }
     }
     // The engine refuses a compaction under the command that asks for it, so it runs just after.
-    $.clock.after(COMPACT_DELAY_MS, () => void compactFor($, name, persona))
+    // A later switch (another persona, off, --keep) cancels it.
+    $.clock.after(COMPACT_DELAY_MS, () => void (switchId === switches && compactFor($, name, persona)))
     return { text: `${label}. Compacting the conversation for it...`, context }
   })
 
@@ -349,11 +357,21 @@ export const register: Register = on => {
     const query = visibleSelect(e.query, isVisible)
     if (query === null) return { deny: `The "${name}" persona does not use those tools. /persona off makes them available.` }
     const wanted = e.max_results ?? 5
-    const ran = await next({ ...e, query, max_results: wanted + HIDDEN_SEARCH_SLACK })
-    if (ran.deny !== undefined || ran.isError === true) return ran
-    const matches = ran.result.matches.filter(isVisible)
-    if (matches.length === ran.result.matches.length && matches.length <= wanted) return ran
-    return { result: { ...ran.result, matches: matches.slice(0, wanted) } }
+    // Hidden tools can fill a whole window, so a window that came back full and
+    // short of visible matches is searched again, wider, up to a bound.
+    let window = wanted + HIDDEN_SEARCH_SLACK
+    for (;;) {
+      const ran = await next({ ...e, query, max_results: window })
+      if (ran.deny !== undefined || ran.isError === true) return ran
+      const matches = ran.result.matches.filter(isVisible)
+      const isFull = ran.result.matches.length >= window
+      if (matches.length < wanted && isFull && window < SEARCH_WINDOW_MAX) {
+        window = Math.min(window * 4, SEARCH_WINDOW_MAX)
+        continue
+      }
+      if (matches.length === ran.result.matches.length && matches.length <= wanted) return ran
+      return { result: { ...ran.result, matches: matches.slice(0, wanted) } }
+    }
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Skill' }, async ($, e, next) => {

@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, parseArgs, parseConfig } from './model'
+import { filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, parseArgs, parseConfig, signInCommand } from './model'
 
 const HOME = '/Users/tester'
 const PATH = `${HOME}/.claude/personas.json`
@@ -360,7 +360,7 @@ test('a login with no sign-in is refused, and the session stays where it was', a
   await start($)
   const reply = (await persona($, 'login test')).text ?? ''
   expect(reply).toMatch(/~\/.claude-test has no sign-in\. The session stays on the personal login\./)
-  expect(reply).toMatch(/CLAUDE_CONFIG_DIR=~\/.claude-test claude auth login/)
+  expect(reply).toContain(`env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CLAUDE_CONFIG_DIR=${HOME}/.claude-test claude auth login`)
   expect(w.envSets).toEqual([])
   expect(await band($)).toBe('personal login')
 })
@@ -388,4 +388,43 @@ test('a login switch Claude Code refuses is reported, and the session stays wher
   expect((await persona($, 'login work')).text).toMatch(/Could not switch to the work login\. On a Team or Enterprise login/)
   expect(await band($)).toBe('personal login')
   expect(w.envSets).toEqual([])
+})
+
+test('a deny on any possible server hides the tool, and server names match in either spelling', () => {
+  expect(isMcpToolAllowed({ deny: ['blocked'] }, 'mcp__blocked__read__file')).toBe(false)
+  expect(isMcpToolAllowed({ deny: ['blocked'] }, 'mcp__other__read__file')).toBe(true)
+  expect(isMcpToolAllowed({ allow: ['foo'], deny: ['foo__bar'] }, 'mcp__foo__bar__x')).toBe(false)
+  const text = '# MCP Server Instructions\n\n## claude.ai Gmail\nMail.\n\n## context7\nDocs.'
+  expect(filterMcpInstructions(text, { deny: ['claude.ai Gmail'] })).toBe('# MCP Server Instructions\n\n## context7\nDocs.')
+  expect(filterMcpInstructions(text, { deny: ['claude_ai_Gmail'] })).toBe('# MCP Server Instructions\n\n## context7\nDocs.')
+})
+
+test('the sign-in command clears a login a per-folder setup exported, and quotes the folder', () => {
+  expect(signInCommand('')).toBe('env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR claude auth login')
+  expect(signInCommand("/Users/a b/.claude-x")).toBe("env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CLAUDE_CONFIG_DIR='/Users/a b/.claude-x' claude auth login")
+})
+
+test('ToolSearch searches a wider window when hidden tools fill the first one', async ($, on) => {
+  world(on)
+  const windows: number[] = []
+  on('tool.call', { tool: 'ToolSearch' }, (_$, e) => {
+    const size = e.tool === 'ToolSearch' ? e.max_results : 0
+    windows.push(size)
+    const hidden = Array.from({ length: 20 }, (_, i) => `mcp__claude_ai_Gmail__t${i}`)
+    return { result: { query: 'mail', total_deferred_tools: 21, matches: [...hidden, 'mcp__context7__send'].slice(0, size) } }
+  })
+  await start($)
+  await persona($, 'dev --keep')
+  const found = await $.tool.call({ tool: 'ToolSearch', query: 'mail', max_results: 5 })
+  expect((found.result as { matches: string[] }).matches).toEqual(['mcp__context7__send'])
+  expect(windows).toEqual([15, 60])
+})
+
+test('a switch made before a pending compaction runs cancels it', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await persona($, 'dev')
+  await persona($, 'mail --keep')
+  await w.clock?.advance(200)
+  expect(w.compacted).toEqual([])
 })

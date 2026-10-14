@@ -147,8 +147,24 @@ export function toolSpelling(server: string): string {
 }
 
 /**
+ * Whether an MCP server, by its /mcp name or its tool spelling, passes the
+ * filter. Both the name and the patterns are compared in the tool spelling, so
+ * `claude.ai Gmail` and `claude_ai_Gmail` are one server to every rule.
+ */
+export function isServerAllowed(filter: Filter | undefined, server: string): boolean {
+  if (filter === undefined) return true
+  return isAllowed(spelledFilter(filter), toolSpelling(server))
+}
+
+function spelledFilter(filter: Filter): Filter {
+  return { allow: filter.allow?.map(toolSpelling), deny: filter.deny?.map(toolSpelling) }
+}
+
+/**
  * Whether an MCP tool (`mcp__<server>__<tool>`) belongs to a server the filter
- * keeps. A server name may hold `__` itself, so every split is tried.
+ * keeps. A server name may hold `__` itself, so the tool name alone does not say
+ * where the server ends: a deny that matches any possible server hides the tool,
+ * and an allow must match one of them.
  */
 export function isMcpToolAllowed(filter: Filter | undefined, tool: string): boolean {
   if (filter === undefined || !tool.startsWith('mcp__')) return true
@@ -157,11 +173,9 @@ export function isMcpToolAllowed(filter: Filter | undefined, tool: string): bool
   for (let at = rest.indexOf('__'); at > 0; at = rest.indexOf('__', at + 1)) {
     servers.push(rest.slice(0, at))
   }
-  const spelled: Filter = {
-    allow: filter.allow?.map(toolSpelling),
-    deny: filter.deny?.map(toolSpelling),
-  }
-  return servers.some(server => isAllowed(spelled, server))
+  const { allow, deny } = spelledFilter(filter)
+  if (deny !== undefined && servers.some(server => matchesAny(deny, server))) return false
+  return allow === undefined || servers.some(server => matchesAny(allow, server))
 }
 
 /**
@@ -230,7 +244,7 @@ export function filterMcpInstructions(text: string, filter: Filter | undefined):
   const [head = '', ...blocks] = part.split(/\n(?=## )/)
   const kept = blocks.filter(block => {
     const server = /^## (.+)/.exec(block)?.[1]?.trim()
-    return server === undefined || isAllowed(filter, server) || isAllowed(filter, toolSpelling(server))
+    return server === undefined || isServerAllowed(filter, server)
   })
   const result = kept.length === 0 ? before + after.replace(/^\n/, '') : before + [head, ...kept].join('\n') + after
   return result.trim() === '' ? null : result
@@ -277,9 +291,19 @@ export function parseAuthStatus(stdout: string): { isSignedIn: boolean; plan?: s
   }
 }
 
-/** The command that signs a login's folder in, for the person to run once. */
-export function signInCommand(storage: string, folder: string): string {
-  return storage === '' ? 'env -u CLAUDE_CONFIG_DIR claude auth login' : `CLAUDE_CONFIG_DIR=${folder} claude auth login`
+/**
+ * The command that signs a login's folder in, for the person to run once. It
+ * clears CLAUDE_SECURESTORAGE_CONFIG_DIR, which a per-folder setup may export
+ * and which would otherwise send the sign-in to that login instead.
+ */
+export function signInCommand(storage: string): string {
+  return storage === ''
+    ? 'env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR claude auth login'
+    : `env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CLAUDE_CONFIG_DIR=${shellQuote(storage)} claude auth login`
+}
+
+function shellQuote(text: string): string {
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`
 }
 
 export type Request =
