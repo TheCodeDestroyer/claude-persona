@@ -28,6 +28,7 @@ Ask only for what the person has not told you: the persona names, and what work 
 
 Follow `personas.schema.json`. Also:
 - A field you leave out keeps everything of that kind.
+- `off`, `none` and the command words (`list`, `reload`, `debug`, `check`, `login`, `dump`) are not valid persona names.
 - Use `allow` for a narrow persona (brainstorm, docs). Use `deny` for a broad one (dev).
 - Use `quiet` for a skill that a hook or another skill calls by name: it stays out of the listing, but a call still works.
 - An `allow` list for skills hides this skill too. Add `"persona:setup"` to it, or tell the person that `/persona off` brings it back.

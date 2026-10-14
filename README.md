@@ -240,7 +240,7 @@ claude --plugin-dir .           # start a session with this folder loaded
 
 `tsc -p .` type-checks the mod once Claude Code has loaded it, because loading writes the types to `.claude-plugin/types/`.
 
-Git hooks come from [lefthook](https://lefthook.dev), which `mise` installs when you enter the folder (run `mise trust` once):
+Git hooks come from [lefthook](https://lefthook.dev). `mise` installs it and `jq` (which the pre-commit check reads `plugin.json` with) when you enter the folder (run `mise trust` once):
 
 - **pre-commit:** a change to what the plugin ships (every path but the docs and repo tooling that `scripts/check-version-bump.sh` lists) must raise `version` in `.claude-plugin/plugin.json`. `claude plugin update` sees a new release only through the version.
 - **pre-push:** `mise run check` (`claude plugin validate .` and `claude plugin test .`).

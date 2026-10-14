@@ -48,6 +48,9 @@ export const LOGINS_SHAPE = '{ "<name>": "<config folder>" } or { "<name>": { "f
 /** The names `/persona <name>` takes to turn every filter off. */
 export const OFF = ['off', 'none']
 
+/** The words `/persona <word>` runs as a command, so no persona can take them. */
+export const COMMANDS = ['list', 'reload', 'debug', 'check', 'login', 'dump']
+
 export function parseConfig(text: string): Config {
   const raw: unknown = JSON.parse(text)
   if (!isObject(raw) || !isObject(raw.personas)) {
@@ -56,6 +59,7 @@ export function parseConfig(text: string): Config {
   const personas: Record<string, Persona> = {}
   for (const [name, value] of Object.entries(raw.personas)) {
     if (OFF.includes(name)) throw new Error(`"${name}" is reserved`)
+    if (COMMANDS.includes(name)) throw new Error(`"${name}" is reserved: /persona ${name} runs a command. Rename the persona`)
     if (!isObject(value)) throw new Error(`persona "${name}" is not an object`)
     personas[name] = {
       description: optionalString(value.description, `${name}.description`),
@@ -154,13 +158,18 @@ export function describeCheck(config: Config, known: Known, path: string, error?
     const names = [...known[kind]].sort()
     lines.push(`${KIND_TITLES[kind]} (${names.length}): ${names.length === 0 ? 'none seen yet' : names.join(', ')}`)
   }
-  if (KINDS.some(kind => known[kind].length === 0)) {
-    lines.push('A kind with none seen is not checked. Send a prompt, then run /persona check again.')
+  const unchecked = KINDS.filter(kind => known[kind].length === 0).map(kind => KIND_TITLES[kind])
+  if (unchecked.length > 0) {
+    lines.push(`Not checked, as none were seen yet: ${unchecked.join(', ')}. Send a prompt, then run /persona check again.`)
   }
   const unmatched = unmatchedNames(config, known)
   lines.push('')
   if (unmatched.length === 0) {
-    lines.push(`Every filter name in ${path} matches something.`)
+    lines.push(
+      unchecked.length === 0
+        ? `Every filter name in ${path} matches something.`
+        : `Every checked filter name in ${path} matches something, but the check is not complete.`,
+    )
   } else {
     lines.push(`Filter names in ${path} that match nothing:`, ...unmatched.map(row => `  ${row}`))
     lines.push('An MCP server that is not connected has no tools, so it is not seen.')

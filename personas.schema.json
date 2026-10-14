@@ -14,7 +14,7 @@
     "personas": {
       "type": "object",
       "description": "Personas by name. /persona <name> switches to one.",
-      "propertyNames": { "not": { "enum": ["off", "none"] } },
+      "propertyNames": { "not": { "enum": ["off", "none", "list", "reload", "debug", "check", "login", "dump"] } },
       "additionalProperties": { "$ref": "#/$defs/persona" }
     },
     "logins": {
@@ -63,7 +63,7 @@
     "names": { "type": "array", "items": { "type": "string" } },
     "color": {
       "type": "string",
-      "minLength": 1,
+      "pattern": "\\S",
       "description": "A color name (cyan), a hex value (#ff8800), or a theme key (success, warning, claude, suggestion)."
     }
   }

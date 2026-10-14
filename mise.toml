@@ -1,5 +1,6 @@
 [tools]
 lefthook = "2.1.5"
+jq = "1.8.1"
 
 [hooks]
 # Puts the git hooks in place; --reset-hooks-path clears a core.hooksPath

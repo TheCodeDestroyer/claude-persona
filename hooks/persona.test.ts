@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingNames, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
+import { describeCheck, filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingNames, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
 
 const HOME = '/Users/tester'
 const PATH = `${HOME}/.claude/personas.json`
@@ -164,6 +164,7 @@ const offerAgent = ($: Engine, agent: string) =>
 test('the model reads the persona file and its filters', () => {
   expect(parseConfig(JSON.stringify(CONFIG)).personas.dev?.mcp).toEqual({ allow: ['context7'], deny: undefined })
   expect(() => parseConfig('{"personas":{"off":{}}}')).toThrow(/reserved/)
+  expect(() => parseConfig('{"personas":{"check":{}}}')).toThrow(/reserved: \/persona check runs a command/)
   expect(() => parseConfig('{"default":"x","personas":{}}')).toThrow(/not defined/)
   expect(isMcpToolAllowed({ allow: ['claude.ai Gmail'] }, 'mcp__claude_ai_Gmail__create_draft')).toBe(true)
   expect(isMcpToolAllowed({ allow: ['context7'] }, 'mcp__claude_ai_Gmail__create_draft')).toBe(false)
@@ -453,6 +454,9 @@ test('filter names that match nothing seen are flagged; a kind with nothing seen
   expect(listingNames(SKILLS)).toEqual(['agent-browser', 'ops:grafana', 'claude-api', 'gideon:gideon', 'convex:db-access'])
   const known = { mcp: ['claude.ai Gmail'], skills: listingNames(SKILLS), agents: [] }
   expect(unmatchedNames(config, known)).toEqual(['dev.mcp.allow: "context7"'])
+  const partial = describeCheck(parseConfig(JSON.stringify({ personas: { dev: { mcp: { allow: ['context7'] } } } })), { mcp: ['context7'], skills: [], agents: [] }, PATH)
+  expect(partial).toMatch(/Not checked, as none were seen yet: Skills, Agent types\./)
+  expect(partial).toMatch(/Every checked filter name in .* matches something, but the check is not complete\./)
   expect(unmatchedNames(config, { mcp: ['context7', 'claude_ai_Gmail'], skills: ['agent-browser'], agents: ['Explore'] })).toEqual([
     'dev.skills.deny: "ops:*"',
     'dev.skills.deny: "gideon:gideon"',
