@@ -428,3 +428,17 @@ test('a switch made before a pending compaction runs cancels it', async ($, on) 
   await w.clock?.advance(200)
   expect(w.compacted).toEqual([])
 })
+
+test('the server the engine names for a tool decides, not the tool name', async ($, on) => {
+  const config = { personas: { foo: { mcp: { allow: ['foo'] } } } }
+  world(on, config)
+  on('tool.call', { tool: /^mcp__/ }, () => ({ result: 'ran' }))
+  await start($)
+  await persona($, 'foo --keep')
+  const tool = 'mcp__foo__bar__read'
+  const described = await $.tool.describe({ tool, description: '', provider: { plugin: 'mcp:foo__bar', tier: 'user' } })
+  expect(described.isDeferred).toBe(true)
+  expect((await $.tool.call({ tool, input: {} } as never)).deny).toMatch(/does not use/)
+  expect(isMcpToolAllowed({ allow: ['foo'] }, tool)).toBe(true)
+  expect(isMcpToolAllowed({ allow: ['foo'] }, tool, 'foo__bar')).toBe(false)
+})

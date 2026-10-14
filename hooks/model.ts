@@ -162,12 +162,13 @@ function spelledFilter(filter: Filter): Filter {
 
 /**
  * Whether an MCP tool (`mcp__<server>__<tool>`) belongs to a server the filter
- * keeps. A server name may hold `__` itself, so the tool name alone does not say
- * where the server ends: a deny that matches any possible server hides the tool,
- * and an allow must match one of them.
+ * keeps. `server` is the server's name when the engine has said it. Without it,
+ * the tool name is all there is, and a server name may hold `__` itself: a deny
+ * that matches any possible server hides the tool, and an allow must match one.
  */
-export function isMcpToolAllowed(filter: Filter | undefined, tool: string): boolean {
+export function isMcpToolAllowed(filter: Filter | undefined, tool: string, server?: string): boolean {
   if (filter === undefined || !tool.startsWith('mcp__')) return true
+  if (server !== undefined) return isServerAllowed(filter, server)
   const servers: string[] = []
   const rest = tool.slice('mcp__'.length)
   for (let at = rest.indexOf('__'); at > 0; at = rest.indexOf('__', at + 1)) {

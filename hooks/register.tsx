@@ -33,6 +33,16 @@ const PERSONA_COLOR = 'claude'
 const LOGIN_COLOR = 'suggestion'
 const COMPACT_DELAY_MS = 100
 
+/**
+ * The server of each MCP tool, as `tool.describe` names it (`mcp:<server>`), so a
+ * check need not guess where the server name ends inside the tool name.
+ */
+const mcpServers = new Map<string, string>()
+
+function isToolVisible(persona: Persona | undefined, tool: string): boolean {
+  return isMcpToolAllowed(persona?.mcp, tool, mcpServers.get(tool))
+}
+
 /** Counts persona switches, so a compaction asked for by an earlier switch can tell it is stale. */
 let switches = 0
 const LOGIN_CHECK_MS = 20_000
@@ -309,9 +319,10 @@ export const register: Register = on => {
 
   // MCP tools of a hidden server go behind ToolSearch...
   on('tool.describe', { tool: /^mcp__/ }, async ($, e, next) => {
+    if (e.provider.plugin.startsWith('mcp:')) mcpServers.set(e.tool, e.provider.plugin.slice('mcp:'.length))
     const described = await next(e)
     const { persona } = await active($)
-    if (isMcpToolAllowed(persona?.mcp, e.tool)) return described
+    if (isToolVisible(persona, e.tool)) return described
     deferredTools += 1
     return { ...described, isDeferred: true }
   })
@@ -324,7 +335,7 @@ export const register: Register = on => {
     let after = text
     if (after !== null && persona !== undefined) {
       if (e.type === 'deferred_tools_delta' && persona.mcp !== undefined) {
-        after = filterToolNames(after, tool => isMcpToolAllowed(persona.mcp, tool))
+        after = filterToolNames(after, tool => isToolVisible(persona, tool))
       }
       if (e.type === 'skill_listing' && persona.skills !== undefined) {
         after = filterListing(after, skill => isListed(persona.skills, skill))
@@ -343,7 +354,7 @@ export const register: Register = on => {
   // A hidden MCP tool or skill the model still asks for is refused.
   on('tool.call', { tool: /^mcp__/ }, async ($, e, next) => {
     const { name, persona } = await active($)
-    return isMcpToolAllowed(persona?.mcp, e.tool)
+    return isToolVisible(persona, e.tool)
       ? next(e)
       : { deny: `The "${name}" persona does not use ${e.tool}. /persona off makes it available.` }
   }).catch(($, e, next) => next(e))
@@ -353,7 +364,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'ToolSearch' }, async ($, e, next) => {
     const { name, persona } = await active($)
     if (persona?.mcp === undefined) return next(e)
-    const isVisible = (tool: string) => isMcpToolAllowed(persona.mcp, tool)
+    const isVisible = (tool: string) => isToolVisible(persona, tool)
     const query = visibleSelect(e.query, isVisible)
     if (query === null) return { deny: `The "${name}" persona does not use those tools. /persona off makes them available.` }
     const wanted = e.max_results ?? 5
