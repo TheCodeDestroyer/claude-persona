@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/TheCodeDestroyer/claude-persona/main/personas.schema.json",
+  "title": "claude-persona personas.json",
+  "description": "Personas for the persona plugin of Claude Code. The plugin reads $CLAUDE_CONFIG_DIR/personas.json, then ~/.claude/personas.json.",
+  "type": "object",
+  "required": ["personas"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "default": {
+      "type": "string",
+      "description": "The persona a session starts with when CLAUDE_PERSONA is not set. Must be a key of personas."
+    },
+    "personas": {
+      "type": "object",
+      "description": "Personas by name. /persona <name> switches to one.",
+      "propertyNames": { "not": { "enum": ["off", "none"] } },
+      "additionalProperties": { "$ref": "#/$defs/persona" }
+    },
+    "logins": {
+      "type": "object",
+      "description": "Claude logins by name, each the config folder that holds its sign-in. /persona login <name> moves the session to one.",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "minLength": 1, "description": "The config folder, such as ~/.claude-work." },
+          {
+            "type": "object",
+            "required": ["folder"],
+            "properties": {
+              "folder": { "type": "string", "minLength": 1, "description": "The config folder, such as ~/.claude-work." },
+              "color": { "$ref": "#/$defs/color" }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "persona": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string", "description": "Shown by /persona, and used to guide compaction." },
+        "instructions": { "type": "string", "description": "Added to the end of the system prompt while the persona is active." },
+        "color": { "$ref": "#/$defs/color" },
+        "mcp": { "$ref": "#/$defs/filter", "description": "MCP servers, by the name /mcp shows (claude.ai Gmail, plugin:context7:context7)." },
+        "skills": { "$ref": "#/$defs/filter", "description": "Skills, by the name the skill listing shows (my-plugin:my-skill, agent-browser)." },
+        "agents": { "$ref": "#/$defs/filter", "description": "Subagent types (Explore, general-purpose)." }
+      },
+      "additionalProperties": false
+    },
+    "filter": {
+      "type": "object",
+      "description": "Leave the field out to keep everything of that kind. * matches any run of characters. /persona check lists the names.",
+      "properties": {
+        "allow": { "$ref": "#/$defs/names", "description": "Keep only these names. [] hides all of them." },
+        "deny": { "$ref": "#/$defs/names", "description": "Hide these names." },
+        "quiet": { "$ref": "#/$defs/names", "description": "Skills only: left out of the listing, but a call still works." }
+      },
+      "additionalProperties": false
+    },
+    "names": { "type": "array", "items": { "type": "string" } },
+    "color": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A color name (cyan), a hex value (#ff8800), or a theme key (success, warning, claude, suggestion)."
+    }
+  }
+}

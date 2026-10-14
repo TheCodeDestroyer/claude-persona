@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, parseArgs, parseConfig, signInCommand } from './model'
+import { filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingNames, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
 
 const HOME = '/Users/tester'
 const PATH = `${HOME}/.claude/personas.json`
@@ -151,6 +151,16 @@ const band = async ($: Engine) => (await drawBand($))?.text
 const attachment = ($: Engine, type: string, text: string) =>
   $.prompt.attachment({ type, text, origin: { kind: 'engine' } })
 
+const describeGmail = ($: Engine) =>
+  $.tool.describe({
+    tool: 'mcp__claude_ai_Gmail__create_draft',
+    description: 'Drafts mail.',
+    provider: { plugin: 'mcp:claude.ai Gmail', tier: 'user' },
+  })
+
+const offerAgent = ($: Engine, agent: string) =>
+  $.agent.offer({ agent, description: '', source: 'built-in', provider: { plugin: 'engine', tier: 'core' } })
+
 test('the model reads the persona file and its filters', () => {
   expect(parseConfig(JSON.stringify(CONFIG)).personas.dev?.mcp).toEqual({ allow: ['context7'], deny: undefined })
   expect(() => parseConfig('{"personas":{"off":{}}}')).toThrow(/reserved/)
@@ -202,15 +212,10 @@ test('/persona dev filters skills, MCP tools and agents, and compacts', async ($
     ['ArtifactData', 'mcp__context7__query-docs', 'WebFetch'].join('\n'),
   )
 
-  const gmail = await $.tool.describe({
-    tool: 'mcp__claude_ai_Gmail__create_draft',
-    description: 'Drafts mail.',
-    provider: { plugin: 'mcp:claude.ai Gmail', tier: 'user' },
-  })
-  expect(gmail.isDeferred).toBe(true)
+  expect((await describeGmail($)).isDeferred).toBe(true)
 
-  expect((await $.agent.offer({ agent: 'claude-code-guide', description: '', source: 'built-in', provider: { plugin: 'engine', tier: 'core' } })).isOffered).toBe(false)
-  expect((await $.agent.offer({ agent: 'Explore', description: '', source: 'built-in', provider: { plugin: 'engine', tier: 'core' } })).isOffered).toBe(true)
+  expect((await offerAgent($, 'claude-code-guide')).isOffered).toBe(false)
+  expect((await offerAgent($, 'Explore')).isOffered).toBe(true)
 })
 
 test('--keep switches without compacting; off clears the filters', async ($, on) => {
@@ -441,4 +446,31 @@ test('the server the engine names for a tool decides, not the tool name', async 
   expect((await $.tool.call({ tool, input: {} } as never)).deny).toMatch(/does not use/)
   expect(isMcpToolAllowed({ allow: ['foo'] }, tool)).toBe(true)
   expect(isMcpToolAllowed({ allow: ['foo'] }, tool, 'foo__bar')).toBe(false)
+})
+
+test('filter names that match nothing seen are flagged; a kind with nothing seen is not checked', () => {
+  const config = parseConfig(JSON.stringify(CONFIG))
+  expect(listingNames(SKILLS)).toEqual(['agent-browser', 'ops:grafana', 'claude-api', 'gideon:gideon', 'convex:db-access'])
+  const known = { mcp: ['claude.ai Gmail'], skills: listingNames(SKILLS), agents: [] }
+  expect(unmatchedNames(config, known)).toEqual(['dev.mcp.allow: "context7"'])
+  expect(unmatchedNames(config, { mcp: ['context7', 'claude_ai_Gmail'], skills: ['agent-browser'], agents: ['Explore'] })).toEqual([
+    'dev.skills.deny: "ops:*"',
+    'dev.skills.deny: "gideon:gideon"',
+    'dev.agents.deny: "claude-code-guide"',
+  ])
+})
+
+test('/persona check lists the names seen under a persona, hidden ones too, and tells the model', async ($, on) => {
+  world(on)
+  await start($)
+  await persona($, 'dev --keep')
+  await attachment($, 'skill_listing', SKILLS)
+  await describeGmail($)
+  await offerAgent($, 'claude-code-guide')
+  const checked = await persona($, 'check')
+  expect(checked.text).toMatch(/MCP servers \(1\): claude\.ai Gmail/)
+  expect(checked.text).toMatch(/Skills \(5\): agent-browser, claude-api, convex:db-access, gideon:gideon, ops:grafana/)
+  expect(checked.text).toMatch(/Agent types \(1\): claude-code-guide/)
+  expect(checked.text).toMatch(/match nothing:\n  dev\.mcp\.allow: "context7"/)
+  expect(checked.context).toEqual([checked.text])
 })

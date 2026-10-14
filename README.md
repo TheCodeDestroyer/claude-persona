@@ -45,8 +45,10 @@ In the desktop app: click **+** next to the prompt box, then **Plugins** → **A
    ```sh
    cp personas.example.json ~/.claude/personas.json
    ```
-2. Edit the names in it to match your MCP servers, skills and agents. `/mcp` shows server names. `/persona dump` writes the skill listing and the tool names of the last request to a file.
-3. In a session, run `/persona` to list the personas, and `/persona dev` to switch.
+2. Run `/persona check`. It lists the names of your MCP servers, skills and agents, and the names in the file that match nothing. Edit the file to match.
+3. Run `/persona reload`, then `/persona` to list the personas, and `/persona dev` to switch.
+
+Or ask Claude to set it up: the `persona:setup` skill knows the file format, the logins and the per-folder setup, and reads the names from `/persona check`.
 
 ## Commands
 
@@ -58,6 +60,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins** → **A
 | `/persona off` | Turns the persona off. Everything is available again. |
 | `/persona login` | Lists the logins. |
 | `/persona login <name>` | Moves the next request to that login (see [Logins](#logins)). |
+| `/persona check` | Lists the MCP servers, skills and agent types the session has seen, hidden ones too, and the filter names that match nothing. Claude reads the list too. |
 | `/persona reload` | Reads `personas.json` again. |
 | `/persona debug` | Shows how many tokens the mod removed from each part of the request. |
 | `/persona dump [path]` | Writes the last request, as the mod sees it, to a file (default `persona-dump.txt` in your config folder). It holds the whole conversation.. |
@@ -70,6 +73,7 @@ The mod reads `$CLAUDE_CONFIG_DIR/personas.json` first, and then `~/.claude/pers
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/TheCodeDestroyer/claude-persona/main/personas.schema.json",
   "default": "dev",
   "personas": {
     "dev": {
@@ -247,4 +251,6 @@ Git hooks come from [lefthook](https://lefthook.dev), which `mise` installs when
 | `hooks/model.ts` | Pure functions: config parsing, filters, argument parsing. |
 | `hooks/persona.test.ts` | Tests against a mocked engine. |
 | `types/index.d.ts` | The mod's session state. |
+| `skills/setup/SKILL.md` | The `persona:setup` skill: how to write `personas.json`. |
 | `personas.example.json` | A starting `personas.json`. |
+| `personas.schema.json` | The JSON schema of `personas.json`, for editors. |

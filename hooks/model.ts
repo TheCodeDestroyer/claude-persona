@@ -8,7 +8,10 @@
  * characters. `quiet` names stay out of what the model is shown but may still
  * be called, for a skill another plugin's hook asks for by name.
  */
-export type Filter = { allow?: string[]; deny?: string[]; quiet?: string[] }
+export type Filter = { [key in FilterKey]?: string[] }
+
+const FILTER_KEYS = ['allow', 'deny', 'quiet'] as const
+type FilterKey = (typeof FILTER_KEYS)[number]
 
 export type Persona = {
   description?: string
@@ -39,6 +42,9 @@ export type Config = {
 
 export const EMPTY: Config = { personas: {} }
 
+/** The shape of `logins`, for the messages that ask for one. */
+export const LOGINS_SHAPE = '{ "<name>": "<config folder>" } or { "<name>": { "folder": "<config folder>", "color": "<color>" } }'
+
 /** The names `/persona <name>` takes to turn every filter off. */
 export const OFF = ['off', 'none']
 
@@ -63,7 +69,7 @@ export function parseConfig(text: string): Config {
   let logins: Record<string, string> | undefined
   let loginColors: Record<string, string> | undefined
   if (raw.logins !== undefined) {
-    if (!isObject(raw.logins)) throw new Error('logins must be { "<name>": "<config folder>" }')
+    if (!isObject(raw.logins)) throw new Error(`logins must be ${LOGINS_SHAPE}`)
     logins = {}
     for (const [name, value] of Object.entries(raw.logins)) {
       const folder = isObject(value) ? value.folder : value
@@ -101,7 +107,7 @@ function optionalColor(value: unknown, where: string): string | undefined {
 function optionalFilter(value: unknown, where: string): Filter | undefined {
   if (value === undefined) return undefined
   if (!isObject(value)) throw new Error(`${where} must be { "allow": [...] } or { "deny": [...] }`)
-  const list = (key: 'allow' | 'deny' | 'quiet') => {
+  const list = (key: FilterKey) => {
     const names = value[key]
     if (names === undefined) return undefined
     if (!Array.isArray(names) || !names.every(n => typeof n === 'string')) {
@@ -110,6 +116,64 @@ function optionalFilter(value: unknown, where: string): Filter | undefined {
     return names as string[]
   }
   return { allow: list('allow'), deny: list('deny'), quiet: list('quiet') }
+}
+
+/** What this session has seen, hidden names included: MCP servers by their /mcp name, skills, agent types. */
+export type Known = { mcp: readonly string[]; skills: readonly string[]; agents: readonly string[] }
+
+const KIND_TITLES = { mcp: 'MCP servers', skills: 'Skills', agents: 'Agent types' } as const
+const KINDS = Object.keys(KIND_TITLES) as (keyof Known)[]
+
+/**
+ * The filter names that match nothing the session has seen, as
+ * `<persona>.<kind>.<key>: "<name>"`. A kind with nothing seen yet is left
+ * out, so a session that has not sent a request flags nothing.
+ */
+export function unmatchedNames(config: Config, known: Known): string[] {
+  return Object.entries(config.personas).flatMap(([name, persona]) =>
+    KINDS.flatMap(kind => {
+      // One glob as an allow filter: MCP names match in either spelling, as the filters do.
+      const matches = (glob: string, seen: string) =>
+        kind === 'mcp' ? isServerAllowed({ allow: [glob] }, seen) : isAllowed({ allow: [glob] }, seen)
+      const names = known[kind]
+      if (names.length === 0) return []
+      return FILTER_KEYS.flatMap(key =>
+        (persona[kind]?.[key] ?? [])
+          .filter(glob => !names.some(seen => matches(glob, seen)))
+          .map(glob => `${name}.${kind}.${key}: "${glob}"`),
+      )
+    }),
+  )
+}
+
+export function describeCheck(config: Config, known: Known, path: string, error?: string): string {
+  const lines: string[] = []
+  if (error !== undefined) lines.push(`${path}: ${error}`, '')
+  lines.push('Names this session has seen, hidden ones included. Filters take these names, and * matches any run of characters.')
+  for (const kind of KINDS) {
+    const names = [...known[kind]].sort()
+    lines.push(`${KIND_TITLES[kind]} (${names.length}): ${names.length === 0 ? 'none seen yet' : names.join(', ')}`)
+  }
+  if (KINDS.some(kind => known[kind].length === 0)) {
+    lines.push('A kind with none seen is not checked. Send a prompt, then run /persona check again.')
+  }
+  const unmatched = unmatchedNames(config, known)
+  lines.push('')
+  if (unmatched.length === 0) {
+    lines.push(`Every filter name in ${path} matches something.`)
+  } else {
+    lines.push(`Filter names in ${path} that match nothing:`, ...unmatched.map(row => `  ${row}`))
+    lines.push('An MCP server that is not connected has no tools, so it is not seen.')
+  }
+  return lines.join('\n')
+}
+
+/** A line that opens a listing entry, `- <name>: <text>`; group 1 is the name. */
+const LISTING_ENTRY = /^- (\S+?):?(\s|$)/
+
+/** The names of a listing, as `filterListing` reads them. */
+export function listingNames(text: string): string[] {
+  return text.split('\n').flatMap(line => LISTING_ENTRY.exec(line)?.[1] ?? [])
 }
 
 function globSource(glob: string): string {
@@ -188,7 +252,7 @@ export function filterListing(text: string, isVisible: (name: string) => boolean
   const kept: string[] = []
   let isKeeping = true
   for (const line of text.split('\n')) {
-    const entry = /^- (\S+?):?(\s|$)/.exec(line)
+    const entry = LISTING_ENTRY.exec(line)
     if (entry?.[1] !== undefined) isKeeping = isVisible(entry[1])
     if (isKeeping) kept.push(line)
   }
@@ -311,11 +375,12 @@ export type Request =
   | { kind: 'list' }
   | { kind: 'reload' }
   | { kind: 'debug' }
+  | { kind: 'check' }
   | { kind: 'dump'; path?: string }
   | { kind: 'login'; name?: string }
   | { kind: 'switch'; name: string | null; isKeeping: boolean }
 
-/** Reads `/persona` arguments: nothing, `reload`, `debug`, `dump [path]`, `login [name]`, or `<name> [--keep]`. */
+/** Reads `/persona` arguments: nothing, `reload`, `debug`, `check`, `dump [path]`, `login [name]`, or `<name> [--keep]`. */
 export function parseArgs(args: string): Request {
   const words = args.trim().split(/\s+/).filter(Boolean)
   const isKeeping = words.includes('--keep')
@@ -323,6 +388,7 @@ export function parseArgs(args: string): Request {
   if (name === undefined || name === 'list') return { kind: 'list' }
   if (name === 'reload') return { kind: 'reload' }
   if (name === 'debug') return { kind: 'debug' }
+  if (name === 'check') return { kind: 'check' }
   if (name === 'login') return { kind: 'login', name: words.filter(w => !w.startsWith('--'))[1] }
   if (name === 'dump') return { kind: 'dump', path: words.filter(w => !w.startsWith('--'))[1] }
   return { kind: 'switch', name: OFF.includes(name) ? null : name, isKeeping }
@@ -353,6 +419,7 @@ export function describeList(config: Config, active: string | null, path: string
   if (names.length > 0) {
     lines.push('', active === null ? 'No persona is active.' : `Active: ${active}.`)
     lines.push('/persona <name> switches and compacts; add --keep to keep the conversation as it is.')
+    lines.push('/persona check lists the names filters take and flags the ones that match nothing.')
   }
   return lines.join('\n')
 }
