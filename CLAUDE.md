@@ -8,7 +8,10 @@ This file provides instructions and context for AI coding agents working on this
 claude plugin validate .   # manifest, marketplace and hooks module
 claude plugin test .       # hooks/persona.test.ts
 claude --plugin-dir .      # try it in a session
+mise run check             # validate + test
 ```
+
+A commit that changes what the plugin ships (every path but the docs and repo tooling `scripts/check-version-bump.sh` lists) must raise `version` in `.claude-plugin/plugin.json`; the marketplace entry has no `version`, since `plugin.json` wins at install (pre-commit hook, `scripts/check-version-bump.sh`).
 
 ## Architecture Overview
 

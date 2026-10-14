@@ -1,0 +1,12 @@
+output:
+  - failure
+
+pre-commit:
+  commands:
+    version-bump:
+      run: bash scripts/check-version-bump.sh
+
+pre-push:
+  commands:
+    check:
+      run: mise run check

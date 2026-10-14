@@ -6,6 +6,7 @@ import type { PersonaView } from '../types'
 import {
   compactInstructions,
   type Config,
+  describeCheck,
   describeList,
   EMPTY,
   filterListing,
@@ -15,6 +16,9 @@ import {
   isCallable,
   isListed,
   isMcpToolAllowed,
+  type Known,
+  listingNames,
+  LOGINS_SHAPE,
   loginOf,
   loginStorage,
   visibleSelect,
@@ -38,6 +42,15 @@ const COMPACT_DELAY_MS = 100
  * check need not guess where the server name ends inside the tool name.
  */
 const mcpServers = new Map<string, string>()
+
+/** Skills and agent types the engine offered, hidden ones too, for `/persona check`. */
+const knownSkills = new Set<string>()
+const knownAgents = new Set<string>()
+
+/** Every name this session has seen; MCP servers come from the tools `tool.describe` named. */
+function known(): Known {
+  return { mcp: [...new Set(mcpServers.values())], skills: [...knownSkills], agents: [...knownAgents] }
+}
 
 function isToolVisible(persona: Persona | undefined, tool: string): boolean {
   return isMcpToolAllowed(persona?.mcp, tool, mcpServers.get(tool))
@@ -224,7 +237,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'persona',
       description: 'List personas, or switch to one (compacts unless --keep)',
-      argumentHint: '[name|off|login <name>|reload|debug|dump] [--keep]',
+      argumentHint: '[name|off|login <name>|check|reload|debug|dump] [--keep]',
     })
     // A resumed session runs in a new process: put back the login it had switched to.
     const held = await $.state.get(LOGIN)
@@ -251,6 +264,12 @@ export const register: Register = on => {
     }
 
     if (request.kind === 'debug') return { text: describeSeen((await active($)).name) }
+    if (request.kind === 'check') {
+      const { config, path, error } = await loaded($)
+      const text = describeCheck(config, known(), path, error)
+      // The model reads it too, so it can help write personas.json.
+      return { text, context: [text] }
+    }
     if (request.kind === 'dump') {
       const written = await dump($, (await active($)).name, request.path ?? (await dumpPath($)))
       return { text: `Wrote what the last request carried to ${written}.` }
@@ -260,7 +279,7 @@ export const register: Register = on => {
     if (request.kind === 'login') {
       const logins = config.logins ?? {}
       const names = Object.keys(logins)
-      if (names.length === 0) return { text: `No logins in ${path}. Add "logins": { "<name>": "<config folder>" }.` }
+      if (names.length === 0) return { text: `No logins in ${path}. Add "logins": ${LOGINS_SHAPE}.` }
       const now = await currentLogin($)
       if (request.name === undefined) {
         const rows = names.map(n => `${n === now ? '*' : ' '} ${n} - ${logins[n]}`)
@@ -331,6 +350,7 @@ export const register: Register = on => {
   // leave the skill listing, and hidden servers their part of any MCP instructions.
   on('prompt.attachment', async ($, e, next) => {
     const { text } = await next(e)
+    if (e.type === 'skill_listing' && text !== null) listingNames(text).forEach(skill => knownSkills.add(skill))
     const { persona } = await active($)
     let after = text
     if (after !== null && persona !== undefined) {
@@ -347,6 +367,7 @@ export const register: Register = on => {
   })
 
   on('agent.offer', async ($, e, next) => {
+    knownAgents.add(e.agent)
     const { persona } = await active($)
     return isAllowed(persona?.agents, e.agent) ? next(e) : { isOffered: false }
   }).catch(($, e, next) => next(e))

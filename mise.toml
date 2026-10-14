@@ -1,0 +1,15 @@
+[tools]
+lefthook = "2.1.5"
+jq = "1.8.1"
+
+[hooks]
+# Puts the git hooks in place; --reset-hooks-path clears a core.hooksPath
+# another tool set, which would hide lefthook's hooks in .git/hooks.
+enter = [
+  "mise install > /dev/null",
+  "lefthook install --reset-hooks-path > /dev/null",
+]
+
+[tasks.check]
+description = "Validate the plugin and run its tests"
+run = ["claude plugin validate .", "claude plugin test ."]

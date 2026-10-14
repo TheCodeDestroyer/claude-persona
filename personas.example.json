@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/TheCodeDestroyer/claude-persona/main/personas.schema.json",
   "default": "dev",
   "personas": {
     "dev": {
