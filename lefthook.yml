@@ -7,9 +7,6 @@ pre-commit:
       run: bash scripts/check-version-bump.sh
 
 pre-push:
-  parallel: true
   commands:
-    validate:
-      run: claude plugin validate .
-    test:
-      run: claude plugin test .
+    check:
+      run: mise run check

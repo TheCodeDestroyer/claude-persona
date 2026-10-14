@@ -238,8 +238,8 @@ claude --plugin-dir .           # start a session with this folder loaded
 
 Git hooks come from [lefthook](https://lefthook.dev), which `mise` installs when you enter the folder (run `mise trust` once):
 
-- **pre-commit:** a change to what the plugin ships (`hooks/`, `types/`, `personas.example.json`, `tsconfig.json`) must raise `version` in `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` must list the same version. `claude plugin update` sees a new release only through the version.
-- **pre-push:** `claude plugin validate .` and `claude plugin test .`.
+- **pre-commit:** a change to what the plugin ships (every path but the docs and repo tooling that `scripts/check-version-bump.sh` lists) must raise `version` in `.claude-plugin/plugin.json`. `claude plugin update` sees a new release only through the version.
+- **pre-push:** `mise run check` (`claude plugin validate .` and `claude plugin test .`).
 
 | File | What it holds |
 | --- | --- |

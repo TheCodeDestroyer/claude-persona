@@ -9,8 +9,7 @@
     {
       "name": "persona",
       "source": "./",
-      "description": "Switch Claude Code personas in a session: hide the MCP servers, skills and agents a persona does not need.",
-      "version": "0.1.0"
+      "description": "Switch Claude Code personas in a session: hide the MCP servers, skills and agents a persona does not need."
     }
   ]
 }

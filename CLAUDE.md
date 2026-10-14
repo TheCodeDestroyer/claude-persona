@@ -11,7 +11,7 @@ claude --plugin-dir .      # try it in a session
 mise run check             # validate + test
 ```
 
-A commit that changes `hooks/`, `types/`, `personas.example.json` or `tsconfig.json` must raise `version` in `.claude-plugin/plugin.json` and the same `version` in `.claude-plugin/marketplace.json` (pre-commit hook, `scripts/check-version-bump.sh`).
+A commit that changes what the plugin ships (every path but the docs and repo tooling `scripts/check-version-bump.sh` lists) must raise `version` in `.claude-plugin/plugin.json`; the marketplace entry has no `version`, since `plugin.json` wins at install (pre-commit hook, `scripts/check-version-bump.sh`).
 
 ## Architecture Overview
 
