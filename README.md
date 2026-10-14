@@ -117,18 +117,21 @@ A color is a name (`cyan`), a hex value (`#ff8800`), or a theme key (`success`, 
 
 ## Per-folder setup with mise
 
-The most reliable way to use a different login per folder is to start Claude Code with a different config folder. Claude Code supports this through `CLAUDE_CONFIG_DIR`. Any tool that sets environment variables per folder works. This example uses [mise](https://mise.jdx.dev).
+Install everything once in `~/.claude`, and let each folder pick its persona and login through environment variables. Any tool that sets environment variables per folder works. This example uses [mise](https://mise.jdx.dev).
 
-**1. Sign the work folder in once**
+**1. Sign the second login in once.** Each login needs a folder that holds its sign-in:
 
 ```sh
 CLAUDE_CONFIG_DIR=~/.claude-work claude auth login
 ```
 
-**2. Install the mod in that folder too.** Each config folder has its own plugins.
+**2. Name the login in `~/.claude/personas.json`**, so the status row can show it:
 
-```sh
-CLAUDE_CONFIG_DIR=~/.claude-work claude plugin install persona --marketplace TheCodeDestroyer/claude-persona
+```json
+"logins": {
+  "personal": { "folder": "~/.claude", "color": "blue" },
+  "work": { "folder": "~/.claude-work", "color": "#ff8800" }
+}
 ```
 
 **3. Add a `mise.toml` at the top of your work projects**
@@ -136,13 +139,11 @@ CLAUDE_CONFIG_DIR=~/.claude-work claude plugin install persona --marketplace The
 ```toml
 # ~/Work/acme/mise.toml
 [env]
-CLAUDE_CONFIG_DIR = "{{env.HOME}}/.claude-work"
 CLAUDE_PERSONA = "dev"
+CLAUDE_SECURESTORAGE_CONFIG_DIR = "{{env.HOME}}/.claude-work"
 ```
 
-Run `mise trust` in that folder once. With mise active in your shell (`eval "$(mise activate zsh)"`), every `claude` you start under `~/Work/acme` uses the work login, work settings and work history, and starts in the `dev` persona.
-
-**4. Optional: a work persona file.** Put `personas.json` in `~/.claude-work/` to give work sessions their own personas. Without one, the mod uses `~/.claude/personas.json`.
+Run `mise trust` in that folder once. With mise active in your shell (`eval "$(mise activate zsh)"`), every `claude` you start under `~/Work/acme` starts in the `dev` persona, on the work login. Plugins, settings, history and `personas.json` stay the ones in `~/.claude`.
 
 To check which login a folder gets:
 
@@ -150,10 +151,30 @@ To check which login a folder gets:
 cd ~/Work/acme && claude auth status
 ```
 
-Tips:
-- Do not set `CLAUDE_CONFIG_DIR` to `~/.claude`. Claude Code then looks for the login in a different place and reports that you are signed out. To use the default folder, leave the variable unset.
+Things to know:
+- `CLAUDE_SECURESTORAGE_CONFIG_DIR` is an internal Claude Code variable that picks only the login. A future release can break it. If it breaks, use the supported way below.
+- `claude auth status` shows the plan of the work login, but the email and organization name come from `~/.claude`.
+- Because the login is set before Claude Code starts, a Team or Enterprise login gets its organization's policies, as usual. See [Team and Enterprise logins](#team-and-enterprise-logins) for what that means for the mod.
 - The app versions of Claude Code that you start from the Dock do not read your shell, so they do not get mise variables.
-- With [direnv](https://direnv.net), the same lines go in `.envrc` as `export CLAUDE_CONFIG_DIR=$HOME/.claude-work`.
+- With [direnv](https://direnv.net), the same lines go in `.envrc` as `export NAME=value`.
+
+### The supported way: a separate config folder
+
+`CLAUDE_CONFIG_DIR` is the setting Claude Code documents. It moves everything, not only the login: the folder has its own plugins, settings and history. Install the mod there as well:
+
+```toml
+[env]
+CLAUDE_PERSONA = "dev"
+CLAUDE_CONFIG_DIR = "{{env.HOME}}/.claude-work"
+```
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude-work claude plugin install persona --marketplace TheCodeDestroyer/claude-persona
+```
+
+The mod reads `~/.claude-work/personas.json` if it exists, and `~/.claude/personas.json` if not.
+
+Do not set `CLAUDE_CONFIG_DIR` to `~/.claude`. Claude Code then looks for the login in a different place and reports that you are signed out. To use the default folder, leave the variable unset.
 
 ## Logins
 
@@ -167,7 +188,7 @@ Tips:
 Limits:
 - It uses `CLAUDE_SECURESTORAGE_CONFIG_DIR`, which is an internal Claude Code variable. A future release can break it.
 - It works only while the session runs on a personal (Pro or Max) login. See the next section.
-- For a fixed login per folder, use the [mise setup](#per-folder-setup-with-mise) instead.
+- To start a folder on a given login, use the [mise setup](#per-folder-setup-with-mise) instead. It is set before Claude Code starts, so it also works for Team logins.
 
 ## Team and Enterprise logins
 
