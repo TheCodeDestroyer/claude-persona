@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { describeCheck, filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingNames, mcpServerOf, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
+import { checkView, describeCheck, describeContext, filterListing, filterMcpInstructions, filterToolNames, isMcpToolAllowed, listingAliases, listingNames, parseArgs, parseConfig, signInCommand, unmatchedNames } from './model'
 
 const HOME = '/Users/tester'
 const PATH = `${HOME}/.claude/personas.json`
@@ -48,11 +48,19 @@ type World = {
   configPath?: string
   /** Why Claude Code refuses an env change, as its guard for Team accounts does. */
   envRefusal?: string
+  /** The MCP tools the context carries, each with its server as /mcp names it. */
+  mcpTools: { name: string; serverName: string; tokens?: number }[]
+  /** The skills and custom agents the context lists, with their tokens. */
+  skills: { name: string; tokens: number }[]
+  agents: { agentType: string; tokens: number }[]
+  /** Whether a surface draws a pane the mod opens, and the ids it opened. */
+  isPlacingPanes: boolean
+  panes: string[]
 }
 
 /** Everything beneath the plugin: the persona file, the environment, the session. */
 function world(on: On, config: unknown = CONFIG, overrides: Partial<World> = {}): World {
-  const w: World = { signIns: { '': 'max', [`${HOME}/.claude-work`]: 'team' }, envSets: [], written: {}, compacted: [], status: [], toasts: [], messages: 4, env: {}, ...overrides }
+  const w: World = { signIns: { '': 'max', [`${HOME}/.claude-work`]: 'team' }, envSets: [], written: {}, compacted: [], status: [], toasts: [], messages: 4, env: {}, mcpTools: [{ name: 'mcp__claude_ai_Gmail__create_draft', serverName: 'claude.ai Gmail' }], skills: [], agents: [], isPlacingPanes: false, panes: [], ...overrides }
   w.clock = mock.clock(on)
   const env: Record<string, string | undefined> = { HOME, ...w.env }
   on('env.get', (_$, e) => ({ value: env[e.name] }))
@@ -90,6 +98,21 @@ function world(on: On, config: unknown = CONFIG, overrides: Partial<World> = {})
     return { value: undefined }
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({
+    value: {
+      context: {
+        breakdown: {
+          mcpTools: w.mcpTools.map(tool => ({ tokens: 0, ...tool, isLoaded: false })),
+          skills: { skillFrontmatter: w.skills.map(skill => ({ ...skill, source: 'plugin' })) },
+          agents: w.agents.map(agent => ({ ...agent, source: 'userSettings' })),
+        },
+      },
+    } as never,
+  }))
+  on('ui.open', (_$, e) => {
+    w.panes.push(e.id)
+    return { value: { isPlaced: w.isPlacingPanes } as never }
+  })
   on('session.messages', () => ({
     value: Array.from({ length: w.messages }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'hi', toolUses: [] })),
   }))
@@ -449,25 +472,17 @@ test('the server the engine names for a tool decides, not the tool name', async 
   expect(isMcpToolAllowed({ allow: ['foo'] }, tool, 'foo__bar')).toBe(false)
 })
 
-test('a plugin\'s MCP server is named as /mcp shows it, and /persona check sees it', async ($, on) => {
-  expect(mcpServerOf('mcp__claude_ai_Gmail__create_draft', 'mcp:claude.ai Gmail')).toBe('claude.ai Gmail')
-  expect(mcpServerOf('mcp__plugin_context7_context7__query-docs', 'context7@context7-marketplace')).toBe('plugin:context7:context7')
-  expect(mcpServerOf('mcp__plugin_my_tool_srv__run', 'my.tool@market')).toBe('plugin:my.tool:srv')
-  expect(mcpServerOf('mcp__other__run', 'context7@context7-marketplace')).toBeUndefined()
-  expect(mcpServerOf('Bash', 'engine')).toBeUndefined()
+test('a plugin\'s MCP server is checked by its /mcp name', async ($, on) => {
+  const tool = 'mcp__plugin_context7_context7__query-docs'
   const config = { personas: { dev: { mcp: { allow: ['plugin:context7:context7'] } } } }
-  world(on, config)
+  world(on, config, { mcpTools: [{ name: tool, serverName: 'plugin:context7:context7' }] })
   await start($)
   await persona($, 'dev --keep')
-  const described = await $.tool.describe({
-    tool: 'mcp__plugin_context7_context7__query-docs',
-    description: '',
-    provider: { plugin: 'context7@context7-marketplace', tier: 'user' },
-  })
+  const described = await $.tool.describe({ tool, description: '', provider: { plugin: 'context7@context7-marketplace', tier: 'user' } })
   expect(described.isDeferred).not.toBe(true)
   const check = await persona($, 'check')
   expect(check.text).toMatch(/MCP servers \(1\): plugin:context7:context7/)
-  expect(check.text).not.toMatch(/match nothing:[\s\S]*plugin:context7:context7/)
+  expect(check.text).toMatch(/Every checked filter name in .* matches something/)
 })
 
 test('filter names that match nothing seen are flagged; a kind with nothing seen is not checked', () => {
@@ -490,12 +505,109 @@ test('/persona check lists the names seen under a persona, hidden ones too, and 
   await start($)
   await persona($, 'dev --keep')
   await attachment($, 'skill_listing', SKILLS)
-  await describeGmail($)
   await offerAgent($, 'claude-code-guide')
   const checked = await persona($, 'check')
   expect(checked.text).toMatch(/MCP servers \(1\): claude\.ai Gmail/)
   expect(checked.text).toMatch(/Skills \(5\): agent-browser, claude-api, convex:db-access, gideon:gideon, ops:grafana/)
   expect(checked.text).toMatch(/Agent types \(1\): claude-code-guide/)
   expect(checked.text).toMatch(/match nothing:\n  dev\.mcp\.allow: "context7"/)
-  expect(checked.context).toEqual([checked.text])
+  expect(checked.text).toContain(checked.context?.[0])
+  expect(checked.text).toMatch(/^dev persona: hides/)
+})
+
+const LISTS = {
+  mcpTools: [
+    { name: 'mcp__claude_ai_Gmail__create_draft', serverName: 'claude.ai Gmail', tokens: 900 },
+    { name: 'mcp__claude_ai_Gmail__search', serverName: 'claude.ai Gmail', tokens: 600 },
+    { name: 'mcp__context7__query-docs', serverName: 'context7', tokens: 400 },
+  ],
+  skills: [
+    { name: 'agent-browser', tokens: 120 },
+    { name: 'ops:grafana', tokens: 300 },
+    { name: 'convex:convex-db-access', tokens: 80 },
+  ],
+  agents: [{ agentType: 'reviewer', tokens: 50 }],
+}
+
+test('the check view marks each name as the persona treats it, by tokens, most first', () => {
+  const config = parseConfig(JSON.stringify({ personas: { dev: { mcp: { allow: ['context7'] }, skills: { deny: ['ops:*'], quiet: ['agent-browser'] } } } }))
+  const known = { mcp: ['claude.ai Gmail', 'context7'], skills: ['agent-browser', 'ops:grafana'], agents: ['reviewer'] }
+  const view = checkView(config, 'dev', LISTS, known, PATH)
+  expect(view.groups.map(group => group.rows.map(row => `${row.mark} ${row.tokens} ${row.name}`))).toEqual([
+    ['hidden 1500 claude.ai Gmail', 'kept 400 context7'],
+    ['hidden 300 ops:grafana', 'quiet 120 agent-browser', 'kept 80 convex:convex-db-access'],
+    ['kept 50 reviewer'],
+  ])
+  expect([view.total, view.hidden]).toEqual([2450, 1920])
+  const none = checkView(config, null, LISTS, known, PATH)
+  expect([none.total, none.hidden]).toEqual([2450, 0])
+  expect(listingAliases(SKILLS)).toEqual([['convex:convex-db-access', 'convex:db-access']])
+})
+
+/** Every string a drawn tree holds, one per line where the tree breaks lines. */
+function drawnText(node: unknown): string {
+  if (typeof node === 'string') return node
+  if (typeof node !== 'object' || node === null) return ''
+  const { type, props, children } = node as { type?: string; props?: { flexDirection?: string }; children?: unknown[] }
+  const parts = (children ?? []).map(drawnText)
+  return type === 'Box' && props?.flexDirection === 'column' ? parts.join('\n') : parts.join('')
+}
+
+test('/persona check opens a pane that draws each kind by tokens, and the names that match nothing', async ($, on) => {
+  const w = world(on, CONFIG, { isPlacingPanes: true, mcpTools: [...LISTS.mcpTools], skills: LISTS.skills, agents: LISTS.agents })
+  await start($)
+  await persona($, 'dev --keep')
+  await attachment($, 'skill_listing', SKILLS)
+  const checked = await persona($, 'check')
+  expect(w.panes).toEqual(['persona-check'])
+  expect(checked.text).toBe('Persona check pane opened.')
+  expect(checked.context?.[0]).toMatch(/^Names this session has seen/)
+  const ui = await $.ui.mount({
+    plugin: 'persona',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'persona-check',
+    props: { title: 'Persona check', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  })
+  const text = drawnText(await ui.drawn())
+  await ui.unmount()
+  expect(text).toMatch(/dev persona · hides ~1\.8k of ~2\.5k tokens/)
+  expect(text).toMatch(/MCP servers \(2\)\n  ✗   1\.5k  claude\.ai Gmail\n  ✓    400  context7/)
+  // The context counts a skill under its full name; the pane shows the name filters take.
+  expect(text).toMatch(/Skills \(3\)\n  ✗    300  ops:grafana\n  ✓    120  agent-browser\n  ✓     80  convex:db-access/)
+  expect(text).toMatch(/Agent types \(1\)\n  ✓     50  reviewer/)
+  expect(text).toMatch(/Not checked, as none were seen yet: Agent types\./)
+  expect(text).toMatch(/Every checked filter name in .* matches something, but the check is not complete\./)
+})
+
+test('the /context section counts the tokens saved and names what is hidden', () => {
+  const persona = parseConfig(JSON.stringify(CONFIG)).personas.dev ?? {}
+  const known = { mcp: [], skills: ['agent-browser', 'ops:grafana', 'gideon:gideon'], agents: ['Explore', 'claude-code-guide'] }
+  const mcpTools = [{ serverName: 'claude.ai Gmail' }, { serverName: 'claude.ai Gmail' }, { serverName: 'context7' }]
+  expect(describeContext('dev', persona, known, mcpTools, { skills: 16_800, mcp: 2_000 })).toBe(
+    [
+      'dev persona saves ~4.7k tokens. The counts above are from before it filters skills and MCP servers.',
+      '  Skills: ~4.2k saved. 1 shown, 2 hidden, 0 quiet.',
+      '    Hidden: gideon:gideon, ops:grafana',
+      '  MCP: ~500 saved. Hidden: claude.ai Gmail (2 tools).',
+      '  Agent types: 1 of 2 offered. Hidden: claude-code-guide.',
+    ].join('\n'),
+  )
+})
+
+test('/context ends with the persona section, and is left alone with no persona', async ($, on) => {
+  world(on)
+  await start($)
+  const context = () =>
+    $.command.run({ command: 'context', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect((await context()).text).toBe('core ran it')
+
+  await persona($, 'dev --keep')
+  expect((await context()).text).toBe('core ran it\n\ndev persona is active. It shows the tokens it saves after the first request.')
+  await attachment($, 'skill_listing', SKILLS)
+  const ran = await context()
+  expect(ran.text).toMatch(/^core ran it\n\ndev persona saves ~\d+ tokens/)
+  expect(ran.text).toMatch(/Hidden: gideon:gideon, ops:grafana/)
+  expect(ran.text).toMatch(/Hidden: claude\.ai Gmail \(1 tool\)/)
+  expect(ran.context?.at(-1)).toMatch(/^dev persona saves/)
 })

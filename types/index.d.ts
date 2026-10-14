@@ -12,8 +12,28 @@ export type PersonaView = {
   loginColor?: string
 }
 
+/** How a persona treats a name: kept, left out of the listing but callable (quiet), or hidden. */
+export type CheckMark = 'kept' | 'quiet' | 'hidden'
+
+/** One MCP server, skill or agent type in the check pane, with the tokens the context gives it. */
+export type CheckRow = { name: string; tokens: number; mark: CheckMark }
+
+/** What the /persona check pane draws: each kind's rows by tokens, and the filter names that match nothing. */
+export type CheckView = {
+  persona: string | null
+  /** The tokens the context lists, and how many of them the persona hides or quiets. */
+  total: number
+  hidden: number
+  groups: { title: string; rows: CheckRow[] }[]
+  unmatched: string[]
+  /** The kinds with no name seen yet, so not checked. */
+  unchecked: string[]
+  path: string
+  error?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    persona: { active: ActivePersona; login: ActiveLogin; view: PersonaView | null }
+    persona: { active: ActivePersona; login: ActiveLogin; view: PersonaView | null; check: CheckView | null }
   }
 }

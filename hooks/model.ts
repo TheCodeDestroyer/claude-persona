@@ -3,6 +3,8 @@
  * reach every rule without an engine.
  */
 
+import type { CheckMark, CheckRow, CheckView } from '../types'
+
 /**
  * Names a persona keeps (`allow`) or hides (`deny`); `*` matches any run of
  * characters. `quiet` names stay out of what the model is shown but may still
@@ -150,6 +152,11 @@ export function unmatchedNames(config: Config, known: Known): string[] {
   )
 }
 
+/** The kinds with no name seen yet, which a check cannot hold filters to. */
+function uncheckedKinds(known: Known): string[] {
+  return KINDS.filter(kind => known[kind].length === 0).map(kind => KIND_TITLES[kind])
+}
+
 export function describeCheck(config: Config, known: Known, path: string, error?: string): string {
   const lines: string[] = []
   if (error !== undefined) lines.push(`${path}: ${error}`, '')
@@ -158,11 +165,16 @@ export function describeCheck(config: Config, known: Known, path: string, error?
     const names = [...known[kind]].sort()
     lines.push(`${KIND_TITLES[kind]} (${names.length}): ${names.length === 0 ? 'none seen yet' : names.join(', ')}`)
   }
-  const unchecked = KINDS.filter(kind => known[kind].length === 0).map(kind => KIND_TITLES[kind])
+  lines.push(...checkFooter(uncheckedKinds(known), unmatchedNames(config, known), path))
+  return lines.join('\n')
+}
+
+/** How a check ends, in the text and the pane alike: the kinds not checked, and the filter names that match nothing. */
+export function checkFooter(unchecked: readonly string[], unmatched: readonly string[], path: string): string[] {
+  const lines: string[] = []
   if (unchecked.length > 0) {
     lines.push(`Not checked, as none were seen yet: ${unchecked.join(', ')}. Send a prompt, then run /persona check again.`)
   }
-  const unmatched = unmatchedNames(config, known)
   lines.push('')
   if (unmatched.length === 0) {
     lines.push(
@@ -174,6 +186,122 @@ export function describeCheck(config: Config, known: Known, path: string, error?
     lines.push(`Filter names in ${path} that match nothing:`, ...unmatched.map(row => `  ${row}`))
     lines.push('An MCP server that is not connected has no tools, so it is not seen.')
   }
+  return lines
+}
+
+/** Characters a persona took out of the request: the skill listing, and the MCP tool names and instructions. */
+export type Removed = { skills: number; mcp: number }
+
+/** A token count, as `4.2k` or `730`. */
+export function tokenCount(tokens: number): string {
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`
+}
+
+/** About how many tokens some characters are, as `~4.2k` or `~730`. */
+export function approxTokens(chars: number): string {
+  return `~${tokenCount(Math.round(chars / 4))}`
+}
+
+/** The context's own lists, before any filter: each MCP tool, skill and custom agent, with its estimated tokens. */
+export type ContextLists = {
+  mcpTools: readonly { name: string; serverName: string; tokens: number }[]
+  skills: readonly { name: string; tokens: number }[]
+  agents: readonly { agentType: string; tokens: number }[]
+}
+
+/** How a persona treats a skill: hidden, kept in the listing, or callable but left out of it (quiet). */
+function skillMark(filter: Filter | undefined, skill: string): CheckMark {
+  return !isAllowed(filter, skill) ? 'hidden' : isListed(filter, skill) ? 'kept' : 'quiet'
+}
+
+/** Each server's total over its tools, as `weight` counts a tool. */
+function byServer<T extends { serverName: string }>(tools: readonly T[], weight: (tool: T) => number): Map<string, number> {
+  const servers = new Map<string, number>()
+  for (const tool of tools) servers.set(tool.serverName, (servers.get(tool.serverName) ?? 0) + weight(tool))
+  return servers
+}
+
+/** Rows by tokens, most first. */
+function byTokens(rows: CheckRow[]): CheckRow[] {
+  return rows.sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name))
+}
+
+/** What the /persona check pane draws: how the active persona treats each name the context lists, and its tokens. */
+export function checkView(
+  config: Config,
+  name: string | null,
+  lists: ContextLists,
+  known: Known,
+  path: string,
+  error?: string,
+): CheckView {
+  const persona = name === null ? undefined : config.personas[name]
+  const groups = [
+    {
+      title: KIND_TITLES.mcp,
+      rows: [...byServer(lists.mcpTools, tool => tool.tokens)].map(([server, tokens]): CheckRow => ({ name: server, tokens, mark: isServerAllowed(persona?.mcp, server) ? 'kept' : 'hidden' })),
+    },
+    { title: KIND_TITLES.skills, rows: lists.skills.map(skill => ({ name: skill.name, tokens: skill.tokens, mark: skillMark(persona?.skills, skill.name) })) },
+    {
+      title: KIND_TITLES.agents,
+      rows: lists.agents.map((agent): CheckRow => ({ name: agent.agentType, tokens: agent.tokens, mark: isAllowed(persona?.agents, agent.agentType) ? 'kept' : 'hidden' })),
+    },
+  ].map(group => ({ ...group, rows: byTokens(group.rows) }))
+  const rows = groups.flatMap(group => group.rows)
+  const tokens = (rows: CheckRow[]) => rows.reduce((total, row) => total + row.tokens, 0)
+  return { persona: name, total: tokens(rows), hidden: tokens(rows.filter(row => row.mark !== 'kept')), groups, unmatched: unmatchedNames(config, known), unchecked: uncheckedKinds(known), path, error }
+}
+
+/** The check's first line, as a title and what follows it: what the persona hides of the tokens the context lists. */
+export function checkHeadline(view: CheckView): [title: string, detail: string] {
+  return view.persona === null
+    ? ['No persona', `every name kept, ~${tokenCount(view.total)} tokens`]
+    : [`${view.persona} persona`, `hides ~${tokenCount(view.hidden)} of ~${tokenCount(view.total)} tokens`]
+}
+
+/** The check pane as text, for a session that does not draw panes. */
+export function describeCheckTokens(view: CheckView): string {
+  const [title, detail] = checkHeadline(view)
+  const lines = [`${title}: ${detail}.`]
+  for (const group of view.groups) {
+    if (group.rows.length === 0) continue
+    lines.push(`${group.title}:`, ...group.rows.map(row => `  ${row.mark.padEnd(6)} ${tokenCount(row.tokens).padStart(6)}  ${row.name}`))
+  }
+  return lines.join('\n')
+}
+
+/**
+ * The section the mod adds to the end of /context: about how many tokens the
+ * persona saves, and what it hides. /context counts skills and MCP
+ * instructions before the persona filters them.
+ */
+export function describeContext(
+  name: string,
+  persona: Persona,
+  known: Known,
+  mcpTools: readonly { serverName: string }[],
+  removed: Removed,
+): string {
+  const skills = [...known.skills].sort()
+  const marked = (mark: CheckMark) => skills.filter(skill => skillMark(persona.skills, skill) === mark)
+  const [shown, hidden, quiet] = [marked('kept').length, marked('hidden'), marked('quiet')]
+  const servers = byServer(mcpTools.filter(tool => !isServerAllowed(persona.mcp, tool.serverName)), () => 1)
+  const hiddenServers = [...servers].map(([server, tools]) => `${server} (${tools} tool${tools === 1 ? '' : 's'})`)
+  const agents = known.agents.filter(agent => !isAllowed(persona.agents, agent)).sort()
+
+  if (skills.length === 0) {
+    return `${name} persona is active. It shows the tokens it saves after the first request.`
+  }
+  const lines = [
+    `${name} persona saves ${approxTokens(removed.skills + removed.mcp)} tokens. The counts above are from before it filters skills and MCP servers.`,
+    `  Skills: ${approxTokens(removed.skills)} saved. ${shown} shown, ${hidden.length} hidden, ${quiet.length} quiet.`,
+  ]
+  if (hidden.length > 0) lines.push(`    Hidden: ${hidden.join(', ')}`)
+  if (quiet.length > 0) lines.push(`    Quiet: ${quiet.join(', ')}`)
+  lines.push(
+    `  MCP: ${approxTokens(removed.mcp)} saved. ${hiddenServers.length === 0 ? 'No server hidden.' : `Hidden: ${hiddenServers.join(', ')}.`}`,
+    `  Agent types: ${known.agents.length - agents.length} of ${known.agents.length} offered.${agents.length > 0 ? ` Hidden: ${agents.join(', ')}.` : ''}`,
+  )
   return lines.join('\n')
 }
 
@@ -183,6 +311,17 @@ const LISTING_ENTRY = /^- (\S+?):?(\s|$)/
 /** The names of a listing, as `filterListing` reads them. */
 export function listingNames(text: string): string[] {
   return text.split('\n').flatMap(line => LISTING_ENTRY.exec(line)?.[1] ?? [])
+}
+
+/** A listing entry that gives a skill's full name too, `- <name> (<full name>): <text>`. */
+const LISTING_ALIAS = /^- (\S+) \((\S+?)\):/
+
+/** Each skill's listing name by its full name, for the skills a listing names both ways. */
+export function listingAliases(text: string): [full: string, name: string][] {
+  return text.split('\n').flatMap(line => {
+    const match = LISTING_ALIAS.exec(line)
+    return match?.[1] !== undefined && match[2] !== undefined ? [[match[2], match[1]] as [string, string]] : []
+  })
 }
 
 function globSource(glob: string): string {
@@ -217,23 +356,6 @@ export function isCallable(filter: Filter | undefined, name: string): boolean {
 /** A server's name as its tools spell it: `claude.ai Gmail` is `claude_ai_Gmail`. */
 export function toolSpelling(server: string): string {
   return server.replace(/[^A-Za-z0-9_*-]/g, '_')
-}
-
-/**
- * The /mcp name of an MCP tool's server, from the tool's `provider.plugin`. A
- * configured server is `mcp:<server>`. A plugin's server names its plugin
- * instead (`context7@context7-marketplace`), so its name, `plugin:<plugin>:<server>`,
- * comes from the tool name `mcp__plugin_<plugin>_<server>__<tool>`, the server in
- * its tool spelling. Undefined when neither fits.
- */
-export function mcpServerOf(tool: string, provider: string): string | undefined {
-  if (provider.startsWith('mcp:')) return provider.slice('mcp:'.length)
-  const plugin = provider.split('@')[0] ?? ''
-  const prefix = `mcp__plugin_${toolSpelling(plugin)}_`
-  if (plugin === '' || !tool.startsWith(prefix)) return undefined
-  const rest = tool.slice(prefix.length)
-  const at = rest.indexOf('__')
-  return at > 0 ? `plugin:${plugin}:${rest.slice(0, at)}` : undefined
 }
 
 /**
