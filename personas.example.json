@@ -1,0 +1,33 @@
+{
+  "default": "dev",
+  "personas": {
+    "dev": {
+      "description": "coding in a repo",
+      "instructions": "This session is for writing and reviewing code.",
+      "color": "cyan",
+      "mcp": { "allow": ["plugin:context7:context7"] },
+      "skills": {
+        "deny": ["anthropic-skills:*"],
+        "quiet": ["my-plugin:save-session"]
+      }
+    },
+    "brainstorm": {
+      "description": "ideas and planning, no code tools",
+      "instructions": "This session is for thinking through ideas. Do not edit files unless asked.",
+      "color": "magenta",
+      "mcp": { "allow": [] },
+      "skills": { "allow": ["research", "grilling"] },
+      "agents": { "allow": ["general-purpose", "Explore"] }
+    },
+    "docs": {
+      "description": "writing documents",
+      "color": "green",
+      "mcp": { "allow": ["claude.ai Google Drive"] },
+      "skills": { "allow": ["anthropic-skills:docx", "anthropic-skills:pdf"] }
+    }
+  },
+  "logins": {
+    "personal": { "folder": "~/.claude", "color": "blue" },
+    "work": { "folder": "~/.claude-work", "color": "#ff8800" }
+  }
+}

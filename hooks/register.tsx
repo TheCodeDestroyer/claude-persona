@@ -1,0 +1,420 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+
+import type { PersonaView } from '../types'
+
+import {
+  compactInstructions,
+  type Config,
+  describeList,
+  EMPTY,
+  filterListing,
+  filterMcpInstructions,
+  filterToolNames,
+  isAllowed,
+  isCallable,
+  isListed,
+  isMcpToolAllowed,
+  loginOf,
+  loginStorage,
+  visibleSelect,
+  type Persona,
+  parseArgs,
+  parseAuthStatus,
+  parseConfig,
+  signInCommand,
+} from './model'
+
+const ACTIVE = { plugin: 'persona', key: 'active' } as const
+const LOGIN = { plugin: 'persona', key: 'login' } as const
+const VIEW = atom({ plugin: 'persona', key: 'view' } as const, null)
+/** Colors for a persona or login that names none: theme keys, so they follow the person's theme. */
+const PERSONA_COLOR = 'claude'
+const LOGIN_COLOR = 'suggestion'
+const COMPACT_DELAY_MS = 100
+const LOGIN_CHECK_MS = 20_000
+/** How many more ToolSearch matches to ask for, so hidden ones dropped still leave enough. */
+const HIDDEN_SEARCH_SLACK = 10
+
+type Loaded = { config: Config; path: string; error?: string }
+
+/** What the engine sent and what this mod made of it, by section id or attachment type, for `/persona debug`. */
+type Seen = { before: number; after: number; count: number }
+const sections = new Map<string, Seen>()
+const attachments = new Map<string, Seen>()
+let deferredTools = 0
+/** The last system prompt as this mod answered it, and the tools that request offered. */
+let lastSystem: readonly { id: string; text: string }[] = []
+let lastTools: readonly string[] = []
+
+const DUMP_PATH = '/tmp/persona-dump.txt'
+
+/** Writes what the last request carried, as far as a mod can see it, so a test can grep it. */
+async function dump($: EngineInterface, name: string | null, path: string): Promise<string> {
+  const messages = await $.session.messages({ as: 'api' })
+  const text = [
+    `# persona: ${name ?? 'none'}`,
+    '',
+    `# tools offered by the last request (${lastTools.length})`,
+    ...lastTools,
+    '',
+    '# system prompt of the last request',
+    ...lastSystem.map(section => `## [${section.id}]\n${section.text}`),
+    '',
+    `# conversation as the API reads it (${messages.length} messages)`,
+    JSON.stringify(messages, null, 2),
+  ].join('\n')
+  await $.fs.write(path, text)
+  return path
+}
+
+function see(map: Map<string, Seen>, key: string, before: string | null, after: string | null): void {
+  const held = map.get(key)
+  map.set(key, { before: before?.length ?? 0, after: after?.length ?? 0, count: (held?.count ?? 0) + 1 })
+}
+
+function describeSeen(name: string | null): string {
+  const tokens = (chars: number) => `~${Math.round(chars / 4)}`
+  const rows = (map: Map<string, Seen>) =>
+    [...map].map(([key, s]) => `  ${key}: ${tokens(s.before)} -> ${tokens(s.after)} tokens${s.count > 1 ? ` (${s.count}x)` : ''}`)
+  const total = (map: Map<string, Seen>) => [...map.values()].reduce((sum, s) => sum + s.before - s.after, 0)
+  return [
+    `Active: ${name ?? 'none'}. Last values the engine sent since this mod loaded:`,
+    'System prompt sections:',
+    ...rows(sections),
+    'Attachments:',
+    ...rows(attachments),
+    `MCP tools this mod moved behind ToolSearch: ${deferredTools}`,
+    `Removed: ~${Math.round(total(sections) / 4)} tokens of system prompt, ~${Math.round(total(attachments) / 4)} of attachments.`,
+  ].join('\n')
+}
+
+// Read once per load; a hot reload or `/persona reload` reads it again.
+let loading: Promise<Loaded> | undefined
+
+/** The config folder's personas.json, else the one in ~/.claude, so a work folder may keep its own. */
+async function readConfig($: EngineInterface): Promise<Loaded> {
+  const shared = `${await $.env.get('HOME')}/.claude/personas.json`
+  const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
+  const own = configDir ? `${configDir.replace(/\/+$/, '')}/personas.json` : shared
+  const path = (await $.fs.exists(own)) ? own : shared
+  if (!(await $.fs.exists(path))) return { config: EMPTY, path }
+  try {
+    return { config: parseConfig(await $.fs.read(path)), path }
+  } catch (error) {
+    return { config: EMPTY, path, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function loaded($: EngineInterface): Promise<Loaded> {
+  loading ??= readConfig($)
+  return loading
+}
+
+/** The active persona: the session's choice, else CLAUDE_PERSONA, else the file's default. */
+async function active($: EngineInterface): Promise<{ name: string | null; persona?: Persona }> {
+  const { config } = await loaded($)
+  const held = await $.state.get(ACTIVE)
+  const name =
+    held.version > 0
+      ? (held.value ?? null)
+      : ((await $.env.get('CLAUDE_PERSONA')) ?? config.default ?? null)
+  const persona = name === null ? undefined : config.personas[name]
+  return persona === undefined ? { name: null } : { name, persona }
+}
+
+/** The named login this session's requests use, as its environment stands. */
+async function currentLogin($: EngineInterface): Promise<string | undefined> {
+  const { config } = await loaded($)
+  const home = (await $.env.get('HOME')) ?? ''
+  return loginOf(
+    config.logins,
+    home,
+    await $.env.get('CLAUDE_SECURESTORAGE_CONFIG_DIR'),
+    await $.env.get('CLAUDE_CONFIG_DIR'),
+  )
+}
+
+async function storageOf($: EngineInterface, folder: string): Promise<string> {
+  return loginStorage(folder, (await $.env.get('HOME')) ?? '')
+}
+
+async function useLogin($: EngineInterface, folder: string): Promise<void> {
+  await $.env.set('CLAUDE_SECURESTORAGE_CONFIG_DIR', await storageOf($, folder))
+}
+
+/**
+ * Claude Code's guard for Team and Enterprise accounts (sec-default) refuses a
+ * plugin's change to the login variables, once a session runs on such an account.
+ */
+const GUARD_NOTE = 'On a Team or Enterprise login, Claude Code does not let a plugin change the login. Start a new session for the other login.'
+
+/** Whether the login switch went through; false when Claude Code refused it. */
+async function tryUseLogin($: EngineInterface, folder: string): Promise<boolean> {
+  try {
+    await useLogin($, folder)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Asks Claude Code whether a login's sign-in is there, without switching to it. */
+async function checkLogin($: EngineInterface, storage: string): Promise<{ isSignedIn: boolean; plan?: string } | undefined> {
+  try {
+    const { exitCode, stdout } = await $.process.run(['claude', 'auth', 'status', '--json'], {
+      env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: storage },
+      timeoutMs: LOGIN_CHECK_MS,
+    })
+    return parseAuthStatus(stdout) ?? (exitCode === 0 ? undefined : { isSignedIn: false })
+  } catch {
+    return undefined
+  }
+}
+
+/** Puts the persona and login in the band above the prompt; a change redraws it. */
+async function showStatus($: EngineInterface): Promise<void> {
+  const { name, persona } = await active($)
+  const { config } = await loaded($)
+  const login = config.logins === undefined ? undefined : ((await currentLogin($)) ?? 'unknown')
+  const view: PersonaView | null =
+    name === null && login === undefined
+      ? null
+      : { persona: name, personaColor: persona?.color, login, loginColor: login && config.loginColors?.[login] }
+  await update($, VIEW, () => view)
+}
+
+async function compactFor($: EngineInterface, name: string, persona: Persona): Promise<void> {
+  try {
+    const { skip } = await $.session.compact({ instructions: compactInstructions(name, persona) })
+    $.ui.toast(skip ? `${name}: compaction skipped (${skip}).` : `${name}: conversation compacted.`)
+  } catch (failure) {
+    const why = failure instanceof Error ? failure.message : String(failure)
+    $.ui.toast(`${name}: could not compact (${why}). The conversation is kept.`)
+  }
+}
+
+/** Asks the engine again for everything a persona changes. */
+function refresh($: EngineInterface): void {
+  $.ui.invalidate('tool.describe')
+  $.ui.invalidate('prompt.attachment')
+}
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'persona',
+      description: 'List personas, or switch to one (compacts unless --keep)',
+      argumentHint: '[name|off|login <name>|reload|debug|dump] [--keep]',
+    })
+    // A resumed session runs in a new process: put back the login it had switched to.
+    const held = await $.state.get(LOGIN)
+    const folder = held.value ? (await loaded($)).config.logins?.[held.value] : undefined
+    if (folder !== undefined && !(await tryUseLogin($, folder))) {
+      await $.state.set(LOGIN, null)
+      $.ui.toast(`persona: could not put back the ${held.value} login. ${GUARD_NOTE}`)
+    }
+    $.ui.status(undefined) // the band replaced the status line this mod pinned before
+    await showStatus($)
+    refresh($)
+    return next(e)
+  })
+
+  on('command.run', { command: 'persona' }, async ($, e) => {
+    const request = parseArgs(e.args)
+
+    if (request.kind === 'reload') {
+      loading = undefined
+      const { path, error } = await loaded($)
+      refresh($)
+      await showStatus($)
+      return { text: error === undefined ? `Read ${path}.` : `${path}: ${error}` }
+    }
+
+    if (request.kind === 'debug') return { text: describeSeen((await active($)).name) }
+    if (request.kind === 'dump') {
+      const written = await dump($, (await active($)).name, request.path ?? DUMP_PATH)
+      return { text: `Wrote what the last request carried to ${written}.` }
+    }
+
+    const { config, path, error } = await loaded($)
+    if (request.kind === 'login') {
+      const logins = config.logins ?? {}
+      const names = Object.keys(logins)
+      if (names.length === 0) return { text: `No logins in ${path}. Add "logins": { "<name>": "<config folder>" }.` }
+      const now = await currentLogin($)
+      if (request.name === undefined) {
+        const rows = names.map(n => `${n === now ? '*' : ' '} ${n} - ${logins[n]}`)
+        return { text: [`Logins in ${path}:`, ...rows, '', '/persona login <name> moves the next request to that login.'].join('\n') }
+      }
+      const folder = logins[request.name]
+      if (folder === undefined) return { text: `No login "${request.name}". Logins: ${names.join(', ')}.` }
+      if (request.name === now) return { text: `${request.name} login already in use.` }
+      const storage = await storageOf($, folder)
+      const checked = await checkLogin($, storage)
+      const staying = `The session stays on the ${now ?? 'current'} login.`
+      if (checked === undefined) return { text: `Could not check the ${request.name} login. ${staying}` }
+      if (!checked.isSignedIn) {
+        return { text: `${folder} has no sign-in. ${staying}\nSign it in once with: ${signInCommand(storage, folder)}` }
+      }
+      if (!(await tryUseLogin($, folder))) return { text: `Could not switch to the ${request.name} login. ${GUARD_NOTE}` }
+      await $.state.set(LOGIN, request.name)
+      await showStatus($)
+      const plan = checked.plan ? ` (${checked.plan})` : ''
+      return { text: `${request.name} login${plan}: the next request uses ${folder}'s sign-in.` }
+    }
+    if (request.kind === 'list') {
+      return { text: describeList(config, (await active($)).name, path, error) }
+    }
+
+    const { name } = request
+    const persona = name === null ? undefined : config.personas[name]
+    if (name !== null && persona === undefined) {
+      return { text: `No persona "${name}" in ${path}.\n\n${describeList(config, (await active($)).name, path, error)}` }
+    }
+
+    await $.state.set(ACTIVE, name)
+    refresh($)
+    await showStatus($)
+
+    const label = name ?? 'off'
+    const context = [
+      name === null
+        ? 'The persona was turned off: every tool, skill and agent is available again.'
+        : `The session now uses the "${name}" persona.${persona?.instructions ? ` ${persona.instructions}` : ''}`,
+    ]
+    if (request.isKeeping || name === null || persona === undefined) {
+      return { text: `${label} (conversation kept).`, context }
+    }
+
+    if ((await $.session.messages()).length < 2) {
+      return { text: `${label}. Nothing to compact yet.`, context }
+    }
+    // The engine refuses a compaction under the command that asks for it, so it runs just after.
+    $.clock.after(COMPACT_DELAY_MS, () => void compactFor($, name, persona))
+    return { text: `${label}. Compacting the conversation for it...`, context }
+  })
+
+  // MCP tools of a hidden server go behind ToolSearch...
+  on('tool.describe', { tool: /^mcp__/ }, async ($, e, next) => {
+    const described = await next(e)
+    const { persona } = await active($)
+    if (isMcpToolAllowed(persona?.mcp, e.tool)) return described
+    deferredTools += 1
+    return { ...described, isDeferred: true }
+  })
+
+  // ...and out of the deferred-tool list, so the model does not see their names. Skills
+  // leave the skill listing, and hidden servers their part of any MCP instructions.
+  on('prompt.attachment', async ($, e, next) => {
+    const { text } = await next(e)
+    const { persona } = await active($)
+    let after = text
+    if (after !== null && persona !== undefined) {
+      if (e.type === 'deferred_tools_delta' && persona.mcp !== undefined) {
+        after = filterToolNames(after, tool => isMcpToolAllowed(persona.mcp, tool))
+      }
+      if (e.type === 'skill_listing' && persona.skills !== undefined) {
+        after = filterListing(after, skill => isListed(persona.skills, skill))
+      }
+      after = filterMcpInstructions(after, persona.mcp)
+    }
+    see(attachments, e.type, text, after)
+    return { text: after }
+  })
+
+  on('agent.offer', async ($, e, next) => {
+    const { persona } = await active($)
+    return isAllowed(persona?.agents, e.agent) ? next(e) : { isOffered: false }
+  }).catch(($, e, next) => next(e))
+
+  // A hidden MCP tool or skill the model still asks for is refused.
+  on('tool.call', { tool: /^mcp__/ }, async ($, e, next) => {
+    const { name, persona } = await active($)
+    return isMcpToolAllowed(persona?.mcp, e.tool)
+      ? next(e)
+      : { deny: `The "${name}" persona does not use ${e.tool}. /persona off makes it available.` }
+  }).catch(($, e, next) => next(e))
+
+  // ToolSearch searches every deferred tool, hidden ones too: hidden names are
+  // taken out of a select, and out of the matches with more asked for to fill the gap.
+  on('tool.call', { tool: 'ToolSearch' }, async ($, e, next) => {
+    const { name, persona } = await active($)
+    if (persona?.mcp === undefined) return next(e)
+    const isVisible = (tool: string) => isMcpToolAllowed(persona.mcp, tool)
+    const query = visibleSelect(e.query, isVisible)
+    if (query === null) return { deny: `The "${name}" persona does not use those tools. /persona off makes them available.` }
+    const wanted = e.max_results ?? 5
+    const ran = await next({ ...e, query, max_results: wanted + HIDDEN_SEARCH_SLACK })
+    if (ran.deny !== undefined || ran.isError === true) return ran
+    const matches = ran.result.matches.filter(isVisible)
+    if (matches.length === ran.result.matches.length && matches.length <= wanted) return ran
+    return { result: { ...ran.result, matches: matches.slice(0, wanted) } }
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'Skill' }, async ($, e, next) => {
+    const { name, persona } = await active($)
+    return isCallable(persona?.skills, e.skill)
+      ? next(e)
+      : { deny: `The "${name}" persona does not use the ${e.skill} skill. /persona off makes it available.` }
+  }).catch(($, e, next) => next(e))
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const view = await read($, VIEW)
+    if (e.props.hasSurvey || view === null) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    // A dim rule with the label in it, like the prompt's own border, so the row
+    // does not read as part of the last reply.
+    const label = [
+      view.persona === null ? '' : `${view.persona} persona`,
+      view.login === undefined ? '' : `${view.login} login`,
+    ].filter(Boolean).join(' · ')
+    const fill = Math.max(0, e.props.bodyColumns - label.length - 4)
+    return (
+      <Box marginTop={1}>
+        <Text>
+          <Text dimColor>── </Text>
+          {view.persona === null ? null : (
+            <Text>
+              <Text color={view.personaColor ?? PERSONA_COLOR} bold>
+                {view.persona}
+              </Text>
+              <Text dimColor> persona</Text>
+            </Text>
+          )}
+          {view.login === undefined ? null : (
+            <Text>
+              {view.persona === null ? null : <Text dimColor> · </Text>}
+              <Text color={view.loginColor ?? LOGIN_COLOR} bold>
+                {view.login}
+              </Text>
+              <Text dimColor> login</Text>
+            </Text>
+          )}
+          <Text dimColor> {'─'.repeat(fill)}</Text>
+        </Text>
+      </Box>
+    )
+  }).catch(($, e, next) => next(e))
+
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    const { name, persona } = await active($)
+
+    const kept = composed.sections.flatMap(section => {
+      const text = persona === undefined ? section.text : filterMcpInstructions(section.text, persona.mcp)
+      see(sections, section.id, section.text, text)
+      return text === null ? [] : [{ ...section, text }]
+    })
+    lastTools = e.tools
+    lastSystem = kept
+    if (persona?.instructions) {
+      kept.push({
+        id: 'persona:instructions',
+        text: `# Persona: ${name}\n\n${persona.instructions}`,
+        scope: 'session',
+      })
+    }
+    return { sections: kept }
+  })
+}
