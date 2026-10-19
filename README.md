@@ -41,14 +41,22 @@ In the desktop app: click **+** next to the prompt box, then **Plugins** → **A
 
 ## Quick start
 
+Let Claude set it up. In a new session, run `/persona check` so Claude can see the names of your MCP servers, skills and agents. Then send this prompt:
+
+```text
+Use the persona:setup skill to set up my personas.json. Suggest personas for how I work, and ask me before you write the file.
+```
+
+The `persona:setup` skill knows the file format, the logins and the per-folder setup. When it is done, run `/persona` to list the personas and `/persona <name>` to switch.
+
+### Set it up by hand
+
 1. Copy the example file to your config folder:
    ```sh
    cp personas.example.json ~/.claude/personas.json
    ```
 2. Run `/persona check`. It lists the names of your MCP servers, skills and agents, and the names in the file that match nothing. Edit the file to match.
 3. Run `/persona reload`, then `/persona` to list the personas, and `/persona dev` to switch.
-
-Or ask Claude to set it up: the `persona:setup` skill knows the file format, the logins and the per-folder setup, and reads the names from `/persona check`.
 
 ## Commands
 
