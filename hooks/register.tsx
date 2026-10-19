@@ -53,7 +53,7 @@ const MARKS: Record<CheckMark, { glyph: string; color: string }> = {
 /** Colors for a persona or login that names none: theme keys, so they follow the person's theme. */
 const PERSONA_COLOR = 'claude'
 const LOGIN_COLOR = 'suggestion'
-const COMPACT_DELAY_MS = 100
+const AFTER_SWITCH_MS = 100
 
 /**
  * The server of each MCP tool, as `tool.describe` names it (`mcp:<server>`), so a
@@ -94,7 +94,7 @@ function isToolVisible(persona: Persona | undefined, tool: string): boolean {
   return isMcpToolAllowed(persona?.mcp, tool, mcpServers.get(tool))
 }
 
-/** Counts persona switches, so a compaction asked for by an earlier switch can tell it is stale. */
+/** Counts persona switches, so a compaction or clear asked for by an earlier switch can tell it is stale. */
 let switches = 0
 const LOGIN_CHECK_MS = 20_000
 /** How many more ToolSearch matches to ask for, so hidden ones dropped still leave enough. */
@@ -280,6 +280,20 @@ async function compactFor($: EngineInterface, name: string, persona: Persona): P
   }
 }
 
+async function clearFor($: EngineInterface, name: string): Promise<void> {
+  try {
+    await $.command.run({ command: 'clear' })
+    // The conversation starts over; put the persona back in case the clear took it.
+    await $.state.set(ACTIVE, name)
+    refresh($)
+    await showStatus($)
+    $.ui.toast(`${name}: conversation cleared.`)
+  } catch (failure) {
+    const why = failure instanceof Error ? failure.message : String(failure)
+    $.ui.toast(`${name}: could not clear (${why}). The conversation is kept.`)
+  }
+}
+
 /** Asks the engine again for everything a persona changes. */
 function refresh($: EngineInterface): void {
   $.ui.invalidate('tool.describe')
@@ -290,8 +304,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'persona',
-      description: 'List personas, or switch to one (compacts unless --keep)',
-      argumentHint: '[name|off|login <name>|check|reload|debug|dump] [--keep]',
+      description: 'List personas, or switch to one (compacts unless --keep or --clear)',
+      argumentHint: '[name|off|login <name>|check|reload|debug|dump] [--keep|--clear]',
     })
     // A resumed session runs in a new process: put back the login it had switched to.
     const held = await $.state.get(LOGIN)
@@ -381,17 +395,21 @@ export const register: Register = on => {
         ? 'The persona was turned off: every tool, skill and agent is available again.'
         : `The session now uses the "${name}" persona.${persona?.instructions ? ` ${persona.instructions}` : ''}`,
     ]
-    if (request.isKeeping || name === null || persona === undefined) {
+    if (request.conversation === 'keep' || name === null || persona === undefined) {
       return { text: `${label} (conversation kept).`, context }
     }
 
+    const isClearing = request.conversation === 'clear'
     if ((await $.session.messages()).length < 2) {
-      return { text: `${label}. Nothing to compact yet.`, context }
+      return { text: `${label}. Nothing to ${isClearing ? 'clear' : 'compact'} yet.`, context }
     }
-    // The engine refuses a compaction under the command that asks for it, so it runs just after.
+    // The engine refuses a compaction or clear under the command that asks for it, so it runs just after.
     // A later switch (another persona, off, --keep) cancels it.
-    $.clock.after(COMPACT_DELAY_MS, () => void (switchId === switches && compactFor($, name, persona)))
-    return { text: `${label}. Compacting the conversation for it...`, context }
+    $.clock.after(AFTER_SWITCH_MS, () => {
+      if (switchId !== switches) return
+      void (isClearing ? clearFor($, name) : compactFor($, name, persona))
+    })
+    return { text: `${label}. ${isClearing ? 'Clearing' : 'Compacting'} the conversation for it...`, context }
   })
 
   // /context counts what the engine sent, so the persona adds what it took out.

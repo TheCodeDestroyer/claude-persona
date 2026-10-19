@@ -57,6 +57,7 @@ Or ask Claude to set it up: the `persona:setup` skill knows the file format, the
 | `/persona` | Lists the personas and shows which one is active. |
 | `/persona <name>` | Switches to that persona and compacts the conversation for it. |
 | `/persona <name> --keep` | Switches without compacting. |
+| `/persona <name> --clear` | Switches and clears the conversation instead of compacting it. |
 | `/persona off` | Turns the persona off. Everything is available again. |
 | `/persona login` | Lists the logins. |
 | `/persona login <name>` | Moves the next request to that login (see [Logins](#logins)). |

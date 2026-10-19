@@ -526,12 +526,16 @@ export type Request =
   | { kind: 'check' }
   | { kind: 'dump'; path?: string }
   | { kind: 'login'; name?: string }
-  | { kind: 'switch'; name: string | null; isKeeping: boolean }
+  | { kind: 'switch'; name: string | null; conversation: Conversation }
 
-/** Reads `/persona` arguments: nothing, `reload`, `debug`, `check`, `dump [path]`, `login [name]`, or `<name> [--keep]`. */
+/** What a switch does to the conversation: compacts it (the default), keeps it, or clears it. */
+export type Conversation = 'compact' | 'keep' | 'clear'
+
+/** Reads `/persona` arguments: nothing, `reload`, `debug`, `check`, `dump [path]`, `login [name]`, or `<name> [--keep|--clear]`. */
 export function parseArgs(args: string): Request {
   const words = args.trim().split(/\s+/).filter(Boolean)
-  const isKeeping = words.includes('--keep')
+  // --keep wins over --clear: the one that loses nothing.
+  const conversation: Conversation = words.includes('--keep') ? 'keep' : words.includes('--clear') ? 'clear' : 'compact'
   const name = words.find(w => !w.startsWith('--'))
   if (name === undefined || name === 'list') return { kind: 'list' }
   if (name === 'reload') return { kind: 'reload' }
@@ -539,7 +543,7 @@ export function parseArgs(args: string): Request {
   if (name === 'check') return { kind: 'check' }
   if (name === 'login') return { kind: 'login', name: words.filter(w => !w.startsWith('--'))[1] }
   if (name === 'dump') return { kind: 'dump', path: words.filter(w => !w.startsWith('--'))[1] }
-  return { kind: 'switch', name: OFF.includes(name) ? null : name, isKeeping }
+  return { kind: 'switch', name: OFF.includes(name) ? null : name, conversation }
 }
 
 export function compactInstructions(name: string, persona: Persona): string {
@@ -566,7 +570,7 @@ export function describeList(config: Config, active: string | null, path: string
   }
   if (names.length > 0) {
     lines.push('', active === null ? 'No persona is active.' : `Active: ${active}.`)
-    lines.push('/persona <name> switches and compacts; add --keep to keep the conversation as it is.')
+    lines.push('/persona <name> switches and compacts; add --keep to keep the conversation as it is, or --clear to start it over.')
     lines.push('/persona check lists the names filters take and flags the ones that match nothing.')
   }
   return lines.join('\n')

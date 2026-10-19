@@ -39,6 +39,8 @@ type World = {
   envSets: { name: string; value?: string }[]
   written: Record<string, string>
   compacted: (string | undefined)[]
+  /** How many times core ran /clear. */
+  cleared: number
   status: (string | undefined)[]
   toasts: string[]
   messages: number
@@ -60,7 +62,7 @@ type World = {
 
 /** Everything beneath the plugin: the persona file, the environment, the session. */
 function world(on: On, config: unknown = CONFIG, overrides: Partial<World> = {}): World {
-  const w: World = { signIns: { '': 'max', [`${HOME}/.claude-work`]: 'team' }, envSets: [], written: {}, compacted: [], status: [], toasts: [], messages: 4, env: {}, mcpTools: [{ name: 'mcp__claude_ai_Gmail__create_draft', serverName: 'claude.ai Gmail' }], skills: [], agents: [], isPlacingPanes: false, panes: [], ...overrides }
+  const w: World = { signIns: { '': 'max', [`${HOME}/.claude-work`]: 'team' }, envSets: [], written: {}, compacted: [], cleared: 0, status: [], toasts: [], messages: 4, env: {}, mcpTools: [{ name: 'mcp__claude_ai_Gmail__create_draft', serverName: 'claude.ai Gmail' }], skills: [], agents: [], isPlacingPanes: false, panes: [], ...overrides }
   w.clock = mock.clock(on)
   const env: Record<string, string | undefined> = { HOME, ...w.env }
   on('env.get', (_$, e) => ({ value: env[e.name] }))
@@ -123,7 +125,10 @@ function world(on: On, config: unknown = CONFIG, overrides: Partial<World> = {})
   on('prompt.attachment', (_$, e) => ({ text: e.text }))
   on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: e.isDeferred }))
   on('agent.offer', () => ({ isOffered: true }))
-  on('command.run', () => ({ text: 'core ran it' }))
+  on('command.run', (_$, e) => {
+    if (e.command === 'clear') w.cleared += 1
+    return { text: 'core ran it' }
+  })
   on('prompt.compose', () => ({
     sections: [
       { id: 'intro', text: 'You are Claude Code.', scope: 'shared' },
@@ -193,8 +198,10 @@ test('the model reads the persona file and its filters', () => {
   expect(isMcpToolAllowed({ allow: ['context7'] }, 'mcp__claude_ai_Gmail__create_draft')).toBe(false)
   expect(isMcpToolAllowed({ deny: ['plugin_*'] }, 'mcp__plugin_context7_context7__query-docs')).toBe(false)
   expect(parseArgs('')).toEqual({ kind: 'list' })
-  expect(parseArgs('dev --keep')).toEqual({ kind: 'switch', name: 'dev', isKeeping: true })
-  expect(parseArgs('off')).toEqual({ kind: 'switch', name: null, isKeeping: false })
+  expect(parseArgs('dev --keep')).toEqual({ kind: 'switch', name: 'dev', conversation: 'keep' })
+  expect(parseArgs('dev --clear')).toEqual({ kind: 'switch', name: 'dev', conversation: 'clear' })
+  expect(parseArgs('dev --clear --keep')).toEqual({ kind: 'switch', name: 'dev', conversation: 'keep' })
+  expect(parseArgs('off')).toEqual({ kind: 'switch', name: null, conversation: 'compact' })
 })
 
 test('a skill listing loses hidden skills, wrapped description lines with them', () => {
@@ -254,6 +261,27 @@ test('--keep switches without compacting; off clears the filters', async ($, on)
   await persona($, 'off')
   expect((await attachment($, 'deferred_tools_delta', TOOLS)).text).toBe(TOOLS)
   expect(await band($)).toBe(undefined)
+})
+
+test('--clear switches and clears instead of compacting', async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect((await persona($, 'dev --clear')).text).toBe('dev. Clearing the conversation for it...')
+  expect(w.cleared).toBe(0)
+  await w.clock?.advance(200)
+  expect(w.cleared).toBe(1)
+  expect(w.compacted).toEqual([])
+  expect(w.toasts).toEqual(['dev: conversation cleared.'])
+  expect(await band($)).toBe('dev persona')
+})
+
+test('a later switch cancels the clear an earlier one asked for', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await persona($, 'dev --clear')
+  await persona($, 'mail --keep')
+  await w.clock?.advance(200)
+  expect(w.cleared).toBe(0)
 })
 
 test('a short conversation is not compacted, and an unknown persona is refused', async ($, on) => {
