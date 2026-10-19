@@ -7,10 +7,10 @@ description: Set up or change personas.json for the persona plugin - personas, t
 
 ## 1. Find the file
 
-The plugin reads `$CLAUDE_CONFIG_DIR/personas.json` if it exists, else `~/.claude/personas.json`. Read the file before you change it. Two levels above this file, in the plugin's folder:
+The plugin reads `$CLAUDE_CONFIG_DIR/personas.json` if it exists, else `~/.claude/personas.json`. Read the file before you change it.
 
-- `personas.example.json`: a starting file. Copy it if there is no file yet. Keep its `$schema` line, so editors complete and check the file.
-- `personas.schema.json`: every field and filter key, and what each one does. Read it before you write.
+- `assets/personas.example.json`, next to this file: a starting file. Copy it if there is no file yet. Keep its `$schema` line, so editors complete and check the file.
+- `personas.schema.json`, two levels above this file in the plugin's folder: every field and filter key, and what each one does. Read it before you write.
 
 ## 2. Get the real names
 

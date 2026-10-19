@@ -51,9 +51,9 @@ The `persona:setup` skill knows the file format, the logins and the per-folder s
 
 ### Set it up by hand
 
-1. Copy the example file to your config folder:
+1. Download [`personas.example.json`](skills/setup/assets/personas.example.json) (the **Download raw file** button), then move it to your config folder:
    ```sh
-   cp personas.example.json ~/.claude/personas.json
+   mv ~/Downloads/personas.example.json ~/.claude/personas.json
    ```
 2. Run `/persona check`. It lists the names of your MCP servers, skills and agents, and the names in the file that match nothing. Edit the file to match.
 3. Run `/persona reload`, then `/persona` to list the personas, and `/persona dev` to switch.
@@ -261,7 +261,7 @@ Git hooks come from [lefthook](https://lefthook.dev). `mise` installs it and `jq
 | `hooks/persona.test.ts` | Tests against a mocked engine. |
 | `types/index.d.ts` | The mod's session state. |
 | `skills/setup/SKILL.md` | The `persona:setup` skill: how to write `personas.json`. |
-| `personas.example.json` | A starting `personas.json`. |
+| `skills/setup/assets/personas.example.json` | A starting `personas.json`, for the skill and for setup by hand. |
 | `personas.schema.json` | The JSON schema of `personas.json`, for editors. |
 
 ## License
