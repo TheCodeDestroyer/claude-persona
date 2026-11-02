@@ -100,6 +100,8 @@ function world(on: On, config: unknown = CONFIG, overrides: Partial<World> = {})
     return { value: undefined }
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  on('classic.SessionStart', () => ({}))
   on('session.usage', () => ({
     value: {
       context: {
@@ -264,6 +266,7 @@ test('--keep switches without compacting; off clears the filters', async ($, on)
 })
 
 test('--clear switches and clears instead of compacting', async ($, on) => {
+  const clear = clearing($, on)
   const w = world(on)
   await start($)
   expect((await persona($, 'dev --clear')).text).toBe('dev. Clearing the conversation for it...')
@@ -272,6 +275,45 @@ test('--clear switches and clears instead of compacting', async ($, on) => {
   expect(w.cleared).toBe(1)
   expect(w.compacted).toEqual([])
   expect(w.toasts).toEqual(['dev: conversation cleared.'])
+  await clear() // what the engine does on the clear clearFor ran
+  expect(await band($)).toBe('dev persona')
+})
+
+/**
+ * A /clear as the engine runs it: session.end, then the new session id starts
+ * $.state over, with no session.start, then the classic SessionStart hook.
+ * Returns the clear; its hooks go in before the test's first call on $.
+ */
+function clearing($: Engine, on: On): () => Promise<void> {
+  let isCleared = false
+  const written = new Set<string>()
+  on('state.get', (_$, e, next) =>
+    e.plugin === 'persona' && isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : next(e),
+  )
+  on('state.set', (_$, e, next) => (isCleared && written.add(e.key), next(e)))
+  return async () => {
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    isCleared = true
+    await $.classic.SessionStart({ source: 'clear' })
+  }
+}
+
+test('a /clear keeps the persona, the login and the band', async ($, on) => {
+  const clear = clearing($, on)
+  world(on, { ...CONFIG, default: 'dev', logins: { personal: '~/.claude', work: '~/.claude-work' } })
+  await start($)
+  await persona($, 'mail --keep')
+  await persona($, 'login work')
+  expect(await band($)).toBe('mail persona · work login')
+  await clear()
+  expect(await band($)).toBe('mail persona · work login')
+})
+
+test('a /clear before any switch keeps the default persona', async ($, on) => {
+  const clear = clearing($, on)
+  world(on, { ...CONFIG, default: 'dev' })
+  await start($)
+  await clear()
   expect(await band($)).toBe('dev persona')
 })
 

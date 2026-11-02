@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, StateRead } from 'claude-code'
 
-import type { CheckMark, PersonaView } from '../types'
+import type { ActiveLogin, ActivePersona, CheckMark, PersonaView } from '../types'
 
 import {
   approxTokens,
@@ -39,6 +39,7 @@ import {
   tokenCount,
 } from './model'
 
+// A /clear carries these two over (the session.end and classic.SessionStart hooks).
 const ACTIVE = { plugin: 'persona', key: 'active' } as const
 const LOGIN = { plugin: 'persona', key: 'login' } as const
 const VIEW = atom({ plugin: 'persona', key: 'view' } as const, null)
@@ -282,11 +283,8 @@ async function compactFor($: EngineInterface, name: string, persona: Persona): P
 
 async function clearFor($: EngineInterface, name: string): Promise<void> {
   try {
+    // The session.end and classic.SessionStart hooks carry the persona over.
     await $.command.run({ command: 'clear' })
-    // The conversation starts over; put the persona back in case the clear took it.
-    await $.state.set(ACTIVE, name)
-    refresh($)
-    await showStatus($)
     $.ui.toast(`${name}: conversation cleared.`)
   } catch (failure) {
     const why = failure instanceof Error ? failure.message : String(failure)
@@ -294,10 +292,30 @@ async function clearFor($: EngineInterface, name: string): Promise<void> {
   }
 }
 
+/**
+ * What a /clear carries over: the engine starts `$.state` over under the new
+ * session id and fires no `session.start`, so the persona, login and band went with it.
+ */
+let carried: { active: StateRead<ActivePersona>; login: StateRead<ActiveLogin> } | undefined
+
 /** Asks the engine again for everything a persona changes. */
 function refresh($: EngineInterface): void {
   $.ui.invalidate('tool.describe')
   $.ui.invalidate('prompt.attachment')
+}
+
+/** Sets the session up from its state: at the start, and again after a /clear. */
+async function bringUp($: EngineInterface): Promise<void> {
+  // A resumed session runs in a new process: put back the login it had switched to.
+  const held = await $.state.get(LOGIN)
+  const folder = held.value ? (await loaded($)).config.logins?.[held.value] : undefined
+  if (folder !== undefined && !(await tryUseLogin($, folder))) {
+    await $.state.set(LOGIN, null)
+    $.ui.toast(`persona: could not put back the ${held.value} login. ${GUARD_NOTE}`)
+  }
+  $.ui.status(undefined) // the band replaced the status line this mod pinned before
+  await showStatus($)
+  refresh($)
 }
 
 export const register: Register = on => {
@@ -307,18 +325,33 @@ export const register: Register = on => {
       description: 'List personas, or switch to one (compacts unless --keep or --clear)',
       argumentHint: '[name|off|login <name>|check|reload|debug|dump] [--keep|--clear]',
     })
-    // A resumed session runs in a new process: put back the login it had switched to.
-    const held = await $.state.get(LOGIN)
-    const folder = held.value ? (await loaded($)).config.logins?.[held.value] : undefined
-    if (folder !== undefined && !(await tryUseLogin($, folder))) {
-      await $.state.set(LOGIN, null)
-      $.ui.toast(`persona: could not put back the ${held.value} login. ${GUARD_NOTE}`)
-    }
-    $.ui.status(undefined) // the band replaced the status line this mod pinned before
-    await showStatus($)
-    refresh($)
+    await bringUp($)
     return next(e)
   })
+
+  // A /clear ends this session's state: keep what the next one needs.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      const [active, login] = await Promise.all([$.state.get(ACTIVE), $.state.get(LOGIN)])
+      carried = { active, login }
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // ...and put it back once the cleared session starts. A persona never chosen
+  // stays unset, so the default still applies.
+  on('classic.SessionStart', async ($, e, next) => {
+    const held = carried
+    if (e.source === 'clear' && held !== undefined) {
+      carried = undefined
+      await Promise.all([
+        held.active.version > 0 ? $.state.set(ACTIVE, held.active.value ?? null) : undefined,
+        $.state.set(LOGIN, held.login.value ?? null),
+      ])
+      await bringUp($)
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'persona' }, async ($, e) => {
     const request = parseArgs(e.args)
