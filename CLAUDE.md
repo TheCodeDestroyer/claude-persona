@@ -22,4 +22,4 @@ A Claude Code mod (2.1.299+), no build step. `hooks/register.tsx` holds the hook
 - Helpers that call `$` stay at the top level: the validator refuses `$` passed into inner closures.
 - `$.session.compact` is refused inside `command.run`; it runs through `$.clock.after`.
 - Never set `CLAUDE_CONFIG_DIR` to `~/.claude` explicitly: Claude Code then reports signed out.
-- On Team/Enterprise logins the built-in `sec-default` guard skips `prompt.attachment`/`prompt.compose` for user mods and refuses `env.set` of login variables.
+- On Team/Enterprise logins the built-in `sec-default` guard skips `prompt.attachment`/`prompt.compose`/`classic.SessionStart` for user mods (managed plugins run first; a user mod cannot run before them) and refuses `env.set` of login variables.

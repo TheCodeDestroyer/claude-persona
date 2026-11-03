@@ -275,45 +275,58 @@ test('--clear switches and clears instead of compacting', async ($, on) => {
   expect(w.cleared).toBe(1)
   expect(w.compacted).toEqual([])
   expect(w.toasts).toEqual(['dev: conversation cleared.'])
-  await clear() // what the engine does on the clear clearFor ran
+  await clear(w) // what the engine does on the clear clearFor ran
   expect(await band($)).toBe('dev persona')
 })
 
 /**
  * A /clear as the engine runs it: session.end, then the new session id starts
- * $.state over, with no session.start, then the classic SessionStart hook.
+ * $.state over, with no session.start. The classic SessionStart hook is left
+ * out: on Team/Enterprise logins the managed sec-default guard holds it back.
  * Returns the clear; its hooks go in before the test's first call on $.
  */
-function clearing($: Engine, on: On): () => Promise<void> {
+function clearing($: Engine, on: On, slowMs = 0): (w: World) => Promise<void> {
   let isCleared = false
   const written = new Set<string>()
   on('state.get', (_$, e, next) =>
     e.plugin === 'persona' && isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : next(e),
   )
   on('state.set', (_$, e, next) => (isCleared && written.add(e.key), next(e)))
-  return async () => {
+  on('session.id', () => ({ value: isCleared ? 's2' : 's1' }))
+  return async w => {
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+    if (slowMs > 0) await w.clock?.advance(slowMs) // the new session id is late
     isCleared = true
-    await $.classic.SessionStart({ source: 'clear' })
+    await w.clock?.advance(slowMs > 0 ? 2_000 : 200)
   }
 }
 
 test('a /clear keeps the persona, the login and the band', async ($, on) => {
   const clear = clearing($, on)
-  world(on, { ...CONFIG, default: 'dev', logins: { personal: '~/.claude', work: '~/.claude-work' } })
+  const w = world(on, { ...LOGINS, default: 'dev' })
   await start($)
   await persona($, 'mail --keep')
   await persona($, 'login work')
   expect(await band($)).toBe('mail persona · work login')
-  await clear()
+  await clear(w)
+  expect(await band($)).toBe('mail persona · work login')
+})
+
+test('a slow /clear still keeps the persona and the login', async ($, on) => {
+  const clear = clearing($, on, 30_000)
+  const w = world(on, { ...LOGINS, default: 'dev' })
+  await start($)
+  await persona($, 'mail --keep')
+  await persona($, 'login work')
+  await clear(w)
   expect(await band($)).toBe('mail persona · work login')
 })
 
 test('a /clear before any switch keeps the default persona', async ($, on) => {
   const clear = clearing($, on)
-  world(on, { ...CONFIG, default: 'dev' })
+  const w = world(on, { ...CONFIG, default: 'dev' })
   await start($)
-  await clear()
+  await clear(w)
   expect(await band($)).toBe('dev persona')
 })
 

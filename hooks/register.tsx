@@ -39,7 +39,7 @@ import {
   tokenCount,
 } from './model'
 
-// A /clear carries these two over (the session.end and classic.SessionStart hooks).
+// A /clear carries these two over (the session.end hook and restoreCarried).
 const ACTIVE = { plugin: 'persona', key: 'active' } as const
 const LOGIN = { plugin: 'persona', key: 'login' } as const
 const VIEW = atom({ plugin: 'persona', key: 'view' } as const, null)
@@ -283,7 +283,7 @@ async function compactFor($: EngineInterface, name: string, persona: Persona): P
 
 async function clearFor($: EngineInterface, name: string): Promise<void> {
   try {
-    // The session.end and classic.SessionStart hooks carry the persona over.
+    // The session.end hook and restoreCarried carry the persona over.
     await $.command.run({ command: 'clear' })
     $.ui.toast(`${name}: conversation cleared.`)
   } catch (failure) {
@@ -295,8 +295,47 @@ async function clearFor($: EngineInterface, name: string): Promise<void> {
 /**
  * What a /clear carries over: the engine starts `$.state` over under the new
  * session id and fires no `session.start`, so the persona, login and band went with it.
+ * `from` is the ending session's id, so the restore knows when the new one is up.
  */
-let carried: { active: StateRead<ActivePersona>; login: StateRead<ActiveLogin> } | undefined
+let carried:
+  | { from: string; active: StateRead<ActivePersona>; login: StateRead<ActiveLogin> }
+  | undefined
+
+/** The longest wait between two looks for the new session after a /clear. */
+const RESTORE_MAX_GAP_MS = 2_000
+/** How long the restore looks for the new session before it gives up: startup work can hold it back. */
+const RESTORE_GIVE_UP_MS = 120_000
+
+/**
+ * Puts back what a /clear carried over, once the new session is up. Runs from a
+ * timer, not `classic.SessionStart`: on Team/Enterprise logins the managed
+ * `sec-default` guard sends that event on past user mods. Waits longer between
+ * looks each time; a later /clear takes over from this one.
+ */
+async function restoreCarried(
+  $: EngineInterface,
+  held: NonNullable<typeof carried>,
+  gapMs: number,
+  waitedMs: number,
+): Promise<void> {
+  if (carried !== held) return
+  if ((await $.session.id()) === held.from) {
+    if (waitedMs < RESTORE_GIVE_UP_MS) {
+      const next = Math.min(gapMs * 2, RESTORE_MAX_GAP_MS)
+      $.clock.after(next, () => void restoreCarried($, held, next, waitedMs + next))
+    } else {
+      carried = undefined
+      $.ui.toast('persona: could not put the persona back after /clear.')
+    }
+    return
+  }
+  carried = undefined
+  await Promise.all([
+    held.active.version > 0 ? $.state.set(ACTIVE, held.active.value ?? null) : undefined,
+    $.state.set(LOGIN, held.login.value ?? null),
+  ])
+  await bringUp($)
+}
 
 /** Asks the engine again for everything a persona changes. */
 function refresh($: EngineInterface): void {
@@ -329,26 +368,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A /clear ends this session's state: keep what the next one needs.
+  // A /clear ends this session's state: keep what the next one needs, and put
+  // it back once the new session is up. A persona never chosen stays unset, so
+  // the default still applies.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       const [active, login] = await Promise.all([$.state.get(ACTIVE), $.state.get(LOGIN)])
-      carried = { active, login }
-    }
-    return next(e)
-  }).catch(($, e, next) => next(e))
-
-  // ...and put it back once the cleared session starts. A persona never chosen
-  // stays unset, so the default still applies.
-  on('classic.SessionStart', async ($, e, next) => {
-    const held = carried
-    if (e.source === 'clear' && held !== undefined) {
-      carried = undefined
-      await Promise.all([
-        held.active.version > 0 ? $.state.set(ACTIVE, held.active.value ?? null) : undefined,
-        $.state.set(LOGIN, held.login.value ?? null),
-      ])
-      await bringUp($)
+      const held = { from: e.sessionId, active, login }
+      carried = held
+      $.clock.after(AFTER_SWITCH_MS, () => void restoreCarried($, held, AFTER_SWITCH_MS, AFTER_SWITCH_MS))
     }
     return next(e)
   }).catch(($, e, next) => next(e))

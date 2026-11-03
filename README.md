@@ -213,6 +213,7 @@ Claude Code has a built-in guard (`sec-default`). It turns on when the session r
 | Refusing calls to hidden tools and skills | Yes |
 | Hiding agent types | Yes, except servers and agents the organization manages |
 | Status above the prompt | Yes |
+| Keeping the persona across a `/clear` | Yes |
 | Removing hidden MCP tool names from the deferred list | No |
 | Hiding skills from the skill listing | No |
 | Removing MCP instructions of hidden servers | No |
